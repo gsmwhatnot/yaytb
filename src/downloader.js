@@ -20,15 +20,15 @@ function runCommand(command, args, { onStdout, onStderr } = {}) {
     let stderr = "";
 
     child.stdout.on("data", (data) => {
-      const text = data.toString();
-      stdout += text;
-      onStdout?.(text);
+      const textChunk = data.toString();
+      stdout += textChunk;
+      onStdout?.(textChunk);
     });
 
     child.stderr.on("data", (data) => {
-      const text = data.toString();
-      stderr += text;
-      onStderr?.(text);
+      const textChunk = data.toString();
+      stderr += textChunk;
+      onStderr?.(textChunk);
     });
 
     child.on("error", (error) => {
@@ -40,6 +40,16 @@ function runCommand(command, args, { onStdout, onStderr } = {}) {
         const error = new Error(`${command} exited with code ${code}`);
         error.stdout = stdout;
         error.stderr = stderr;
+        logger.error(
+          {
+            command,
+            args,
+            code,
+            stdout: stdout.trim() || undefined,
+            stderr: stderr.trim() || undefined,
+          },
+          "External command failed"
+        );
         rejectPromise(error);
       } else {
         resolvePromise({ stdout, stderr });
@@ -350,7 +360,7 @@ function pickDownloadedFile(files) {
 
 async function transcodeAudio({ inputPath, outputPath, bitrateKbps }) {
   const bitrate = Math.max(64, bitrateKbps || 192);
-  const args = [
+  const baseArgs = [
     "-y",
     "-i",
     inputPath,
@@ -363,7 +373,31 @@ async function transcodeAudio({ inputPath, outputPath, bitrateKbps }) {
     "44100",
     outputPath,
   ];
-  await runFfmpeg(args);
+
+  try {
+    await runFfmpeg(baseArgs);
+  } catch (error) {
+    const stderr = (error.stderr || "").toLowerCase();
+    if (stderr.includes("unknown encoder 'libmp3lame'")) {
+      logger.warn("libmp3lame unavailable, falling back to native mp3 encoder");
+      const fallbackArgs = [
+        "-y",
+        "-i",
+        inputPath,
+        "-vn",
+        "-acodec",
+        "mp3",
+        "-b:a",
+        `${bitrate}k`,
+        "-ar",
+        "44100",
+        outputPath,
+      ];
+      await runFfmpeg(fallbackArgs);
+    } else {
+      throw error;
+    }
+  }
 }
 
 async function transcodeVideo({ inputPath, outputPath, targetVideoHeight }) {
@@ -393,7 +427,53 @@ async function transcodeVideo({ inputPath, outputPath, targetVideoHeight }) {
     outputPath,
   );
 
-  await runFfmpeg(args);
+  try {
+    await runFfmpeg(args);
+  } catch (error) {
+    const stderr = (error.stderr || "").toLowerCase();
+    if (stderr.includes("unknown encoder 'libx264'")) {
+      logger.warn("libx264 unavailable, falling back to video stream copy");
+      const fallbackArgs = [
+        "-y",
+        "-i",
+        inputPath,
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ];
+
+      try {
+        await runFfmpeg(fallbackArgs);
+      } catch (fallbackError) {
+        const fallbackStderr = (fallbackError.stderr || "").toLowerCase();
+        if (fallbackStderr.includes("matches no streams") && fallbackStderr.includes(":a")) {
+          logger.warn("No audio stream detected, exporting video without audio track");
+          const videoOnlyArgs = [
+            "-y",
+            "-i",
+            inputPath,
+            "-c:v",
+            "copy",
+            "-an",
+            "-movflags",
+            "+faststart",
+            outputPath,
+          ];
+          await runFfmpeg(videoOnlyArgs);
+        } else {
+          throw fallbackError;
+        }
+      }
+    } else {
+      throw error;
+    }
+  }
 }
 
 async function fetchInfo(url) {
