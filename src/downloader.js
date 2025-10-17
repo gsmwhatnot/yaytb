@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 
-const { ensureDir, readdir, remove, stat } = fsExtra;
+const { ensureDir, readdir, remove, stat, move } = fsExtra;
 
 const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist"]; // keep invocations deterministic
 

@@ -45,6 +45,14 @@ function createStatusUpdater(chatId, messageId) {
   };
 }
 
+function logRequest(ctx, extra = {}) {
+  logger.info({ userId: ctx.from?.id, chatId: ctx.chat?.id, ...extra }, "Incoming request");
+}
+
+function logUnauthorized(ctx) {
+  logger.warn({ userId: ctx.from?.id, chatId: ctx.chat?.id }, "Unauthorized access attempt");
+}
+
 function buildFormatKeyboard(formats, type) {
   const buttons = formats.map((format, index) =>
     Markup.button.callback(format.displayLabel, `fmt:${type}:${index}`)
@@ -70,11 +78,7 @@ function isTelegramEntityTooLarge(error) {
 }
 
 async function handleUnauthorized(ctx) {
-  logger.warn({ userId: ctx.from?.id }, "Unauthorized access attempt");
-  if (ctx.chat?.type !== "private") {
-    return;
-  }
-  await ctx.reply("You are not allowed to use this bot.");
+  logUnauthorized(ctx);
 }
 
 bot.start(async (ctx) => {
@@ -82,6 +86,8 @@ bot.start(async (ctx) => {
     await handleUnauthorized(ctx);
     return;
   }
+
+  logRequest(ctx, { command: 'start' });
 
   await ctx.reply(
     "Send me a video or audio link (YouTube, Instagram, Facebook, etc.) and I'll fetch it for you."
@@ -93,6 +99,8 @@ bot.help(async (ctx) => {
     await handleUnauthorized(ctx);
     return;
   }
+
+  logRequest(ctx, { command: 'help' });
 
   const helpText = [
     "Usage:",
@@ -112,6 +120,8 @@ bot.command("cancel", async (ctx) => {
     return;
   }
 
+  logRequest(ctx, { command: 'cancel' });
+
   sessions.delete(ctx.chat.id);
   await ctx.reply("Canceled current request. Send a new link to start over.");
 });
@@ -121,6 +131,8 @@ bot.on("text", async (ctx) => {
     await handleUnauthorized(ctx);
     return;
   }
+
+  logRequest(ctx, { message: 'text' });
 
   const existingSession = sessions.get(ctx.chat.id);
   if (existingSession) {
@@ -162,10 +174,12 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from?.id;
   if (!isAuthorized(userId)) {
-    await ctx.answerCbQuery("Not allowed", { show_alert: true });
+    await ctx.answerCbQuery();
     await handleUnauthorized(ctx);
     return;
   }
+
+  logRequest(ctx, { action: 'choose-type', chosenType: ctx.match[1] });
 
   const session = sessions.get(chatId);
   if (!session || session.userId !== userId) {
@@ -226,7 +240,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from?.id;
   if (!isAuthorized(userId)) {
-    await ctx.answerCbQuery("Not allowed", { show_alert: true });
+    await ctx.answerCbQuery();
     await handleUnauthorized(ctx);
     return;
   }
@@ -247,6 +261,12 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
   }
 
   await ctx.answerCbQuery('Selected ' + selectedFormat.displayLabel);
+
+  logRequest(ctx, {
+    action: 'choose-format',
+    formatId: selectedFormat.id,
+    formatLabel: selectedFormat.displayLabel,
+  });
 
   if (session.formatMessageId) {
     await ctx.telegram.deleteMessage(chatId, session.formatMessageId).catch(() => {});
