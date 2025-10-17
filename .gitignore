@@ -1,0 +1,5 @@
+node_modules/
+.env
+logs/*.log
+local_api_data/
+files/cookies.txt

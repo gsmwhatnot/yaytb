@@ -1,0 +1,29 @@
+services:
+  telegram-bot-api:
+    image: ghcr.io/bots-house/docker-telegram-bot-api:latest
+    restart: unless-stopped
+    env_file: .env
+    command:
+      - --dir=/var/lib/telegram-bot-api
+      - --local
+    volumes:
+      - ./local_api_data:/var/lib/telegram-bot-api
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 8081 || exit 1"]
+      interval: 5s
+      timeout: 30s
+      retries: 3
+
+  bot:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      telegram-bot-api:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - ./files/yt-dlp:/opt/yt-dlp
+      - ./files/cookies.txt:/config/cookies.txt

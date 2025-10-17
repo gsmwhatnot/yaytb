@@ -1,0 +1,19 @@
+{
+  "name": "yttelbot",
+  "version": "1.0.0",
+  "description": "Telegram bot for downloading media via yt-dlp",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fs-extra": "^11.2.0",
+    "pino": "^9.1.0",
+    "telegraf": "^4.16.3"
+  }
+}
