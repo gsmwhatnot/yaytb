@@ -286,9 +286,6 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
         onStatus: async (text) => {
           await updateStatus(text);
         },
-        targetAudioBitrate: selectedFormat.targetAudioBitrate,
-        targetVideoHeight: selectedFormat.targetVideoHeight,
-        outputExtension: selectedFormat.outputExtension,
         targetFileName: selectedFormat.targetFileName,
       });
 
@@ -305,14 +302,27 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
 
       try {
         if (type === 'audio') {
-          await ctx.telegram.sendAudio(
-            chatId,
-            { source: download.stream() },
-            {
-              title: download.title,
-              fileName: download.fileName,
-            }
-          );
+          const lowerFile = download.fileName.toLowerCase();
+          const isMp3 = lowerFile.endsWith('.mp3');
+          const isM4a = lowerFile.endsWith('.m4a');
+
+          if (isMp3 || isM4a) {
+            await ctx.telegram.sendAudio(
+              chatId,
+              { source: download.stream(), filename: download.fileName },
+              {
+                title: download.title,
+              }
+            );
+          } else {
+            await ctx.telegram.sendDocument(
+              chatId,
+              { source: download.stream(), filename: download.fileName },
+              {
+                caption: download.title,
+              }
+            );
+          }
         } else {
           await ctx.telegram.sendVideo(
             chatId,

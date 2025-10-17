@@ -6,8 +6,8 @@ Telegram bot for downloading media (YouTube, Instagram, Facebook, etc.) via `yt-
 - Runs on Node.js 22 inside Docker.
 - Authorizes usage based on an allowlist of Telegram user IDs.
 - Inline keyboards auto-dismiss after each tap, and format buttons use friendly labels such as “MP3 128 kbps (~25MB)” or “MP4 1080p (~300MB)”.
-- Download queue with live status updates (Queued → Downloading → Converting → Uploading → Done).
-- Fetches with `yt-dlp`, then always transcodes locally with `ffmpeg` (libmp3lame for audio, H.264/AAC for video) to keep results consistent and lightly compressed.
+- Download queue with live status updates (Queued → Downloading → Uploading → Done).
+- Grabs the exact format selected via `yt-dlp` and ships it straight to Telegram without extra transcoding.
 - Optional local Bot API gateway lifts Telegram’s upload ceiling to 2 GB.
 - Persists logs, `yt-dlp` binary, and `cookies.txt` via bind-mounted volumes.
 - Automatically cleans temporary download directories after each transfer.
@@ -63,7 +63,7 @@ If you prefer Telegram’s hosted Bot API, leave `TELEGRAM_API_ROOT` empty and r
 1. Send a supported media URL from an authorized Telegram account.
 2. Choose whether you want audio (MP3) or video (MP4). The bot removes the prompt right away so double taps do not queue extra jobs.
 3. Pick one of the suggested formats. Audio options surface common bitrates (64/96/128/192/256/320 kbps) and video options show resolutions like 720p or 1080p along with size hints.
-4. Watch the status updates: the bot downloads, transcodes with ffmpeg, and then uploads the result named after the source title.
+4. Watch the status updates: the bot downloads the chosen stream and uploads it back named after the source title.
 5. If the final file would exceed `MAX_FILE_SIZE_MB` or Telegram rejects the upload, the bot keeps the session open and re-shows the format options so you can choose a smaller variant.
 
 Use `/help` in chat for a quick recap or `/cancel` to abort the current request.

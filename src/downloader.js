@@ -67,10 +67,6 @@ function runYtDlp(args, hooks) {
   return runCommand(config.YT_DLP_BINARY_PATH, args, hooks);
 }
 
-function runFfmpeg(args) {
-  return runCommand("ffmpeg", args);
-}
-
 function buildArgs(...additional) {
   const args = [...COMMON_ARGS, ...additional];
   if (config.YT_DLP_COOKIES_PATH && existsSync(config.YT_DLP_COOKIES_PATH)) {
@@ -329,22 +325,18 @@ function filterWellKnownFormats(formats, type, { durationSeconds } = {}) {
       const estimatedSize = estimateAudioSize(durationSeconds, bitrateKbps) || fmt.approxSize;
       return {
         ...fmt,
-        targetAudioBitrate: bitrateKbps,
         estimatedSizeBytes: estimatedSize || null,
         displayLabel: createAudioLabel({ bitrateKbps, sizeBytes: estimatedSize || fmt.approxSize }),
-        outputExtension: "mp3",
-        targetFileName: `${fmt.id}-audio.mp3`,
+        targetFileName: `${fmt.id}-audio`,
       };
     }
 
     const height = parseResolutionHeight(fmt.resolution) || fmt.meta?.height || 0;
     return {
       ...fmt,
-      targetVideoHeight: height || null,
       estimatedSizeBytes: fmt.approxSize || null,
       displayLabel: createVideoLabel({ height: height || null, sizeBytes: fmt.approxSize }),
-      outputExtension: "mp4",
-      targetFileName: `${fmt.id}-video.mp4`,
+      targetFileName: `${fmt.id}-video`,
     };
   });
 }
@@ -357,126 +349,6 @@ function pickDownloadedFile(files) {
     const lower = file.toLowerCase();
     return !lower.endsWith(".part") && !lower.endsWith(".ytdl") && !lower.endsWith(".info.json");
   });
-}
-
-
-async function transcodeAudio({ inputPath, outputPath, bitrateKbps }) {
-  const bitrate = Math.max(64, bitrateKbps || 192);
-  const baseArgs = [
-    "-y",
-    "-i",
-    inputPath,
-    "-vn",
-    "-acodec",
-    "libmp3lame",
-    "-b:a",
-    `${bitrate}k`,
-    "-ar",
-    "44100",
-    outputPath,
-  ];
-
-  try {
-    await runFfmpeg(baseArgs);
-  } catch (error) {
-    const stderr = (error.stderr || "").toLowerCase();
-    if (stderr.includes("unknown encoder 'libmp3lame'")) {
-      logger.warn("libmp3lame unavailable, falling back to native mp3 encoder");
-      const fallbackArgs = [
-        "-y",
-        "-i",
-        inputPath,
-        "-vn",
-        "-acodec",
-        "mp3",
-        "-b:a",
-        `${bitrate}k`,
-        "-ar",
-        "44100",
-        outputPath,
-      ];
-      await runFfmpeg(fallbackArgs);
-    } else {
-      throw error;
-    }
-  }
-}
-
-async function transcodeVideo({ inputPath, outputPath, targetVideoHeight }) {
-  const args = [
-    "-y",
-    "-i",
-    inputPath,
-  ];
-
-  if (targetVideoHeight) {
-    const scaleFilter = `scale=-2:min(${targetVideoHeight}\\,ih)`;
-    args.push("-vf", scaleFilter);
-  }
-
-  args.push(
-    "-c:v",
-    "libx264",
-    "-preset",
-    "medium",
-    "-crf",
-    "21",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    "-movflags",
-    "+faststart",
-    outputPath,
-  );
-
-  try {
-    await runFfmpeg(args);
-  } catch (error) {
-    const stderr = (error.stderr || "").toLowerCase();
-    if (stderr.includes("unknown encoder 'libx264'")) {
-      logger.warn("libx264 unavailable, falling back to video stream copy");
-      const fallbackArgs = [
-        "-y",
-        "-i",
-        inputPath,
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-movflags",
-        "+faststart",
-        outputPath,
-      ];
-
-      try {
-        await runFfmpeg(fallbackArgs);
-      } catch (fallbackError) {
-        const fallbackStderr = (fallbackError.stderr || "").toLowerCase();
-        if (fallbackStderr.includes("matches no streams") && fallbackStderr.includes(":a")) {
-          logger.warn("No audio stream detected, exporting video without audio track");
-          const videoOnlyArgs = [
-            "-y",
-            "-i",
-            inputPath,
-            "-c:v",
-            "copy",
-            "-an",
-            "-movflags",
-            "+faststart",
-            outputPath,
-          ];
-          await runFfmpeg(videoOnlyArgs);
-        } else {
-          throw fallbackError;
-        }
-      }
-    } else {
-      throw error;
-    }
-  }
 }
 
 async function fetchInfo(url) {
@@ -543,16 +415,13 @@ export async function downloadMedia({
   type,
   expectedTitle,
   onStatus,
-  targetAudioBitrate,
-  targetVideoHeight,
-  outputExtension,
   targetFileName,
 }) {
   const jobId = crypto.randomUUID();
   const workingDir = resolve(config.DOWNLOAD_TEMP_DIR, jobId);
   await ensureDir(workingDir);
 
-  const outputTemplate = join(workingDir, "%(title).200s.%(ext)s");
+  const outputTemplate = join(workingDir, "%(id)s.%(ext)s");
 
   const args = buildArgs(
     "--no-progress",
@@ -575,35 +444,14 @@ export async function downloadMedia({
   const downloadedPath = join(workingDir, downloadedFile);
   const baseTitle = sanitizeFileName(expectedTitle || parsePath(downloadedFile).name);
   const displayTitle = expectedTitle || baseTitle;
-  const extension = type === "audio" ? "mp3" : "mp4";
-  const finalExtension = outputExtension || extension;
+  const originalExt = parsePath(downloadedFile).ext || (type === "audio" ? ".mp3" : ".mp4");
   const randomName = crypto.randomUUID();
-  const safeBase = targetFileName ? sanitizeFileName(targetFileName).replace(/\.[^.]+$/, "") : randomName;
-  const finalFileName = `${safeBase}.${finalExtension}`;
+  const safeBase = sanitizeFileName(targetFileName || randomName);
+  const finalFileName = `${safeBase}${originalExt}`;
   const finalPath = join(workingDir, finalFileName);
 
-  onStatus?.("Converting with ffmpeg...");
-  if (type === "audio") {
-    await transcodeAudio({
-      inputPath: downloadedPath,
-      outputPath: finalPath,
-      bitrateKbps: targetAudioBitrate,
-    });
-  } else {
-    await transcodeVideo({
-      inputPath: downloadedPath,
-      outputPath: finalPath,
-      targetVideoHeight,
-    });
-  }
-
-  // Remove original files to save space
   if (downloadedPath !== finalPath) {
-    try {
-      await remove(downloadedPath);
-    } catch (error) {
-      logger.debug({ error: error.message }, "Failed to remove source file after transcode");
-    }
+    await move(downloadedPath, finalPath, { overwrite: true });
   }
 
   const fileStats = await stat(finalPath);
