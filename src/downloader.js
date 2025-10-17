@@ -408,7 +408,8 @@ async function transcodeVideo({ inputPath, outputPath, targetVideoHeight }) {
   ];
 
   if (targetVideoHeight) {
-    args.push("-vf", "scale=-2:min(" + targetVideoHeight + ",ih)");
+    const scaleFilter = `scale=-2:min(${targetVideoHeight}\\,ih)`;
+    args.push("-vf", scaleFilter);
   }
 
   args.push(
