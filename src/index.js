@@ -253,6 +253,8 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
     sessions.update(chatId, { formatMessageId: null });
   }
 
+  sessions.update(chatId, { title: session.title });
+
   const estimatedSize = selectedFormat.estimatedSizeBytes || selectedFormat.approxSize || null;
   if (estimatedSize && estimatedSize > TELEGRAM_FILE_LIMIT_BYTES) {
     await ctx.reply(
@@ -287,6 +289,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
         targetAudioBitrate: selectedFormat.targetAudioBitrate,
         targetVideoHeight: selectedFormat.targetVideoHeight,
         outputExtension: selectedFormat.outputExtension,
+        targetFileName: selectedFormat.targetFileName,
       });
 
       if (download.size > TELEGRAM_FILE_LIMIT_BYTES) {

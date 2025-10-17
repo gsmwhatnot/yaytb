@@ -333,6 +333,7 @@ function filterWellKnownFormats(formats, type, { durationSeconds } = {}) {
         estimatedSizeBytes: estimatedSize || null,
         displayLabel: createAudioLabel({ bitrateKbps, sizeBytes: estimatedSize || fmt.approxSize }),
         outputExtension: "mp3",
+        targetFileName: `${fmt.id}-audio.mp3`,
       };
     }
 
@@ -343,6 +344,7 @@ function filterWellKnownFormats(formats, type, { durationSeconds } = {}) {
       estimatedSizeBytes: fmt.approxSize || null,
       displayLabel: createVideoLabel({ height: height || null, sizeBytes: fmt.approxSize }),
       outputExtension: "mp4",
+      targetFileName: `${fmt.id}-video.mp4`,
     };
   });
 }
@@ -544,6 +546,7 @@ export async function downloadMedia({
   targetAudioBitrate,
   targetVideoHeight,
   outputExtension,
+  targetFileName,
 }) {
   const jobId = crypto.randomUUID();
   const workingDir = resolve(config.DOWNLOAD_TEMP_DIR, jobId);
@@ -574,7 +577,9 @@ export async function downloadMedia({
   const displayTitle = expectedTitle || baseTitle;
   const extension = type === "audio" ? "mp3" : "mp4";
   const finalExtension = outputExtension || extension;
-  const finalFileName = baseTitle + "." + finalExtension;
+  const randomName = crypto.randomUUID();
+  const safeBase = targetFileName ? sanitizeFileName(targetFileName).replace(/\.[^.]+$/, "") : randomName;
+  const finalFileName = `${safeBase}.${finalExtension}`;
   const finalPath = join(workingDir, finalFileName);
 
   onStatus?.("Converting with ffmpeg...");
