@@ -86,60 +86,22 @@ function sanitizeFileName(name) {
     .slice(0, 180) || "output";
 }
 
-function parseFormatList(output) {
-  const lines = output.split(/\r?\n/);
-  const results = [];
-
-  for (const line of lines) {
-    if (!line || !line.trim()) {
-      continue;
-    }
-
-    const trimmed = line.trimEnd();
-    if (/^[-=]+$/.test(trimmed) || /^(id|format)\b/i.test(trimmed)) {
-      continue;
-    }
-
-    const segments = trimmed.split("|").map((segment) => segment.trim());
-    const left = segments.shift();
-    if (!left) {
-      continue;
-    }
-
-    const parts = left.split(/\s+/).filter(Boolean);
-    if (parts.length < 2) {
-      continue;
-    }
-
-    const formatId = parts.shift();
-    if (!formatId || /(pass)/i.test(trimmed)) {
-      continue;
-    }
-
-    const extension = parts.shift() || "";
-    const resolution = parts.join(" ").trim();
-    const note = segments.filter(Boolean).join(" | ");
-
-    results.push({
-      id: formatId,
-      extension,
-      resolution,
-      note,
-      raw: trimmed,
-    });
+function classifyFormat(format) {
+  if (format.meta?.vcodec === "none") {
+    return "audio";
+  }
+  if (format.meta?.acodec === "none") {
+    return "video";
   }
 
-  return results;
-}
-
-function classifyFormat(entry) {
-  const resolution = entry.resolution.toLowerCase();
-  const note = entry.note.toLowerCase();
-  const id = entry.id.toLowerCase();
+  const resolution = format.resolution.toLowerCase();
+  const note = format.note.toLowerCase();
+  const id = format.id.toLowerCase();
 
   if (resolution.includes("audio only") || note.includes("audio only") || id.includes("aud")) {
     return "audio";
   }
+
   return "video";
 }
 
@@ -218,24 +180,35 @@ function formatBytes(bytes) {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)}${units[index]}`;
 }
 
-function computeApproxSize(formatEntry, formatMap) {
-  const parts = formatEntry.id.split("+");
-  let total = 0;
-  let hasSize = false;
-  for (const part of parts) {
-    const info = formatMap.get(part);
-    if (info) {
-      const sizeCandidate = info.filesize ?? info.filesize_approx;
-      if (sizeCandidate) {
-        total += sizeCandidate;
-        hasSize = true;
-      }
-    }
+function computeApproxSize(format) {
+  return format.meta?.filesize ?? format.meta?.filesize_approx ?? parseSizeFromNote(format.note);
+}
+
+function createResolution(format) {
+  if (format.vcodec === "none") {
+    return "audio only";
   }
-  if (hasSize) {
-    return total;
+  if (format.resolution && format.resolution !== "audio only") {
+    return format.resolution;
   }
-  return parseSizeFromNote(formatEntry.note);
+  if (format.height) {
+    return `${format.height}p`;
+  }
+  if (format.width && format.height) {
+    return `${format.width}x${format.height}`;
+  }
+  return format.format_note || "video";
+}
+
+function createFormatNote(format) {
+  return [
+    format.format_note,
+    format.language,
+    format.acodec && format.acodec !== "none" ? `audio:${format.acodec}` : null,
+    format.vcodec && format.vcodec !== "none" ? `video:${format.vcodec}` : null,
+    format.abr ? `${Math.round(format.abr)}kbps` : null,
+    format.tbr ? `${Math.round(format.tbr)}kbps` : null,
+  ].filter(Boolean).join(" | ");
 }
 
 function parseResolutionHeight(value) {
@@ -398,35 +371,35 @@ async function fetchInfo(url) {
 export async function listFormats(url) {
   logger.info({ url }, "Listing available formats");
 
-  const listArgs = buildArgs("--list-formats", url);
+  const info = await fetchInfo(url);
 
-  const [{ stdout: listOutput }, info] = await Promise.all([
-    runYtDlp(listArgs),
-    fetchInfo(url),
-  ]);
+  const formats = (info.formats || [])
+    .filter((format) => format.format_id && format.ext)
+    .map((format) => {
+      const entry = {
+        id: format.format_id,
+        extension: format.ext,
+        resolution: createResolution(format),
+        note: createFormatNote(format),
+        raw: format.format || format.format_id,
+        meta: format,
+      };
 
-  const parsed = parseFormatList(listOutput);
-  const formatMap = new Map();
-  info.formats?.forEach((fmt) => {
-    if (fmt.format_id) {
-      formatMap.set(fmt.format_id, fmt);
-    }
-  });
+      return {
+        ...entry,
+        approxSize: computeApproxSize(entry),
+        type: classifyFormat(entry),
+      };
+    });
 
-  const formats = parsed.map((entry) => {
-    const approxSize = computeApproxSize(entry, formatMap);
-    const meta = formatMap.get(entry.id) || null;
-    return {
-      id: entry.id,
-      extension: entry.extension,
-      resolution: entry.resolution,
-      note: entry.note,
-      approxSize,
-      type: classifyFormat(entry),
-      raw: entry.raw,
-      meta,
-    };
-  });
+  logger.info(
+    {
+      url,
+      formatCount: formats.length,
+      audioLanguageCount: getAudioLanguages(formats).length,
+    },
+    "Listed available formats"
+  );
 
   return {
     title: info.title,
