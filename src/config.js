@@ -37,6 +37,12 @@ const parsePositiveNumber = (value, fallback) => {
   return parsed;
 };
 
+const parseList = (value = "") =>
+  value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const AUTHORIZED_USER_IDS = new Set(parseIds(process.env.AUTHORIZED_USER_IDS));
 
@@ -46,6 +52,9 @@ if (AUTHORIZED_USER_IDS.size === 0) {
 
 const YT_DLP_BINARY_PATH = process.env.YT_DLP_BINARY_PATH || "/opt/yt-dlp";
 const YT_DLP_COOKIES_PATH = process.env.YT_DLP_COOKIES_PATH || "/config/cookies.txt";
+const YT_DLP_JS_RUNTIME = (process.env.YT_DLP_JS_RUNTIME || "node").trim();
+const YT_DLP_REMOTE_COMPONENTS = parseList(process.env.YT_DLP_REMOTE_COMPONENTS);
+const YT_DLP_EXTRA_ARGS = parseList(process.env.YT_DLP_EXTRA_ARGS);
 
 const MAX_CONCURRENT_DOWNLOADS = parsePositiveInt(
   process.env.MAX_CONCURRENT_DOWNLOADS,
@@ -73,6 +82,9 @@ export const config = {
   AUTHORIZED_USER_IDS,
   YT_DLP_BINARY_PATH,
   YT_DLP_COOKIES_PATH,
+  YT_DLP_JS_RUNTIME,
+  YT_DLP_REMOTE_COMPONENTS,
+  YT_DLP_EXTRA_ARGS,
   MAX_CONCURRENT_DOWNLOADS,
   MAX_FILE_SIZE_BYTES,
   MAX_FILE_SIZE_MB,

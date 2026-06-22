@@ -27,6 +27,9 @@ Copy `.env.example` to `.env` and fill in the values:
 | `AUTHORIZED_USER_IDS` | Comma-separated Telegram user IDs allowed to use the bot. |
 | `YT_DLP_BINARY_PATH` | Path to the mounted `yt-dlp` binary inside the container (default `/opt/yt-dlp`). |
 | `YT_DLP_COOKIES_PATH` | Path to the mounted `cookies.txt` inside the container. |
+| `YT_DLP_JS_RUNTIME` | JavaScript runtime passed to `yt-dlp --js-runtimes` for YouTube challenge solving (default `node`). |
+| `YT_DLP_REMOTE_COMPONENTS` | Optional comma-separated remote components for yt-dlp, such as `ejs:github`, when your binary/package needs them. |
+| `YT_DLP_EXTRA_ARGS` | Optional comma-separated extra arguments appended to every yt-dlp invocation. |
 | `LOG_FILE_PATH` | Location for the structured log file (default `/usr/src/app/logs/app.log`). |
 | `MAX_CONCURRENT_DOWNLOADS` | Queue concurrency (default `2`). |
 | `MAX_FILE_SIZE_MB` | Maximum file size allowed to be uploaded. Defaults to `1900` (just under Telegram’s 2 GB limit when using the local gateway). Reduce this value if you rely on the public Bot API. |

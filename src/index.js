@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { SessionStore } from "./session-store.js";
 import { DownloadQueue } from "./queue.js";
-import { getAudioLanguages, getAudioQualityOptions, getFormatsByType, listFormats, downloadMedia } from "./downloader.js";
+import { getAudioLanguages, getAudioQualityOptions, getFormatsByType, getYtDlpVersion, listFormats, downloadMedia } from "./downloader.js";
 
 const telegrafOptions = {};
 if (config.TELEGRAM_API_ROOT) {
@@ -544,8 +544,29 @@ bot.catch((error, ctx) => {
   ctx.reply?.("Something went wrong. Please try again later.");
 });
 
-bot.launch().then(() => {
+bot.launch().then(async () => {
   logger.info("Telegram bot started");
+  try {
+    const ytDlpVersion = await getYtDlpVersion();
+    logger.info(
+      {
+        path: config.YT_DLP_BINARY_PATH,
+        version: ytDlpVersion,
+        jsRuntime: config.YT_DLP_JS_RUNTIME || undefined,
+        remoteComponents: config.YT_DLP_REMOTE_COMPONENTS,
+        extraArgs: config.YT_DLP_EXTRA_ARGS,
+      },
+      "yt-dlp ready"
+    );
+  } catch (error) {
+    logger.error(
+      {
+        path: config.YT_DLP_BINARY_PATH,
+        error: error.message,
+      },
+      "yt-dlp startup check failed"
+    );
+  }
 });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));

@@ -8,7 +8,7 @@ import { logger } from "./logger.js";
 
 const { ensureDir, readdir, remove, stat, move } = fsExtra;
 
-const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist", "--js-runtimes", "node"]; // keep invocations deterministic
+const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist"]; // keep invocations deterministic
 const AUDIO_OUTPUT_PRESETS = [
   { name: "Podcast", bitrateKbps: 48 },
   { name: "Low", bitrateKbps: 64 },
@@ -75,11 +75,27 @@ function runYtDlp(args, hooks) {
 }
 
 function buildArgs(...additional) {
-  const args = [...COMMON_ARGS, ...additional];
+  const args = [...COMMON_ARGS];
+
+  if (config.YT_DLP_JS_RUNTIME) {
+    args.push("--js-runtimes", config.YT_DLP_JS_RUNTIME);
+  }
+
+  for (const component of config.YT_DLP_REMOTE_COMPONENTS) {
+    args.push("--remote-components", component);
+  }
+
+  args.push(...config.YT_DLP_EXTRA_ARGS, ...additional);
+
   if (config.YT_DLP_COOKIES_PATH && existsSync(config.YT_DLP_COOKIES_PATH)) {
     args.push("--cookies", config.YT_DLP_COOKIES_PATH);
   }
   return args;
+}
+
+export async function getYtDlpVersion() {
+  const { stdout } = await runYtDlp(["--version"]);
+  return stdout.trim();
 }
 
 function sanitizeFileName(name) {
