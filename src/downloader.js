@@ -356,7 +356,7 @@ function pickDownloadedFile(files) {
 }
 
 async function fetchInfo(url) {
-  const args = buildArgs("--dump-json", "--skip-download", url);
+  const args = buildArgs("--dump-json", "--skip-download", "--ignore-no-formats-error", url);
   const { stdout } = await runYtDlp(args);
   const line = stdout
     .split(/\r?\n/)
