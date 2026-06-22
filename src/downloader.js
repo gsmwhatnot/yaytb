@@ -8,7 +8,7 @@ import { logger } from "./logger.js";
 
 const { ensureDir, readdir, remove, stat, move } = fsExtra;
 
-const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist"]; // keep invocations deterministic
+const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist", "--js-runtimes", "node"]; // keep invocations deterministic
 
 function runCommand(command, args, { onStdout, onStderr } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
