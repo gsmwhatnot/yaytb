@@ -651,8 +651,6 @@ export async function downloadMedia({
       "-y",
       "-i",
       downloadedPath,
-      "-map",
-      "0:a:0",
     ];
 
     if (coverPath) {
@@ -667,6 +665,8 @@ export async function downloadMedia({
     }
 
     ffmpegArgs.push(
+      "-map",
+      "0:a:0",
       "-codec:a",
       "libmp3lame",
       "-b:a",
