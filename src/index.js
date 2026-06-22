@@ -5,7 +5,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { SessionStore } from "./session-store.js";
 import { DownloadQueue } from "./queue.js";
-import { getAudioLanguages, getAudioQualityOptions, getFormatsByType, getYtDlpVersion, listFormats, downloadMedia } from "./downloader.js";
+import { getAudioLanguages, getAudioQualityOptions, getVideoLanguages, getVideoQualityOptions, getYtDlpVersion, listFormats, downloadMedia } from "./downloader.js";
 
 const telegrafOptions = {};
 if (config.TELEGRAM_API_ROOT) {
@@ -67,9 +67,9 @@ function buildFormatKeyboard(formats, type) {
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  if (type === "audio") {
+  if (type === "audio" || type === "video") {
     rows.push([
-      Markup.button.callback("Back", "back:audio-language"),
+      Markup.button.callback("Back", `back:${type}-language`),
       Markup.button.callback("Cancel", "cancel"),
     ]);
   } else {
@@ -78,10 +78,10 @@ function buildFormatKeyboard(formats, type) {
   return Markup.inlineKeyboard(rows);
 }
 
-function buildLanguageKeyboard(languages) {
+function buildLanguageKeyboard(languages, type) {
   const buttons = languages.map((language, index) => {
     const suffix = language.count > 1 ? ` (${language.count})` : "";
-    return Markup.button.callback(`${language.label}${suffix}`, `lang:${index}`);
+    return Markup.button.callback(`${language.label}${suffix}`, `lang:${type}:${index}`);
   });
   const rows = [];
   for (let i = 0; i < buttons.length; i += 2) {
@@ -216,7 +216,7 @@ bot.help(async (ctx) => {
     "Usage:",
     "1. Send a media link.",
     "2. Pick audio or video.",
-    "3. For audio, choose the language.",
+    "3. Choose the language.",
     "4. Choose a provided format.",
     "",
     "Commands:",
@@ -370,63 +370,37 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
       return;
     }
 
-    if (type === "audio") {
-      const languages = getAudioLanguages(formats);
+    if (type === "audio" || type === "video") {
+      const languages = type === "audio" ? getAudioLanguages(formats) : getVideoLanguages(formats);
 
       if (!languages.length) {
-        await ctx.reply("No suitable audio formats found. Try another link.");
+        await ctx.reply(`No suitable ${type} formats found. Try another link.`);
         return;
       }
 
       const summary = buildMediaSummary({ title, durationSeconds });
+      const languagePrompt = type === "audio" ? "Choose audio language:" : "Choose video audio language:";
       const languageMessage = await ctx.reply(
-        [summary, "Choose audio language:"].filter(Boolean).join("\n\n"),
-        buildLanguageKeyboard(languages)
+        [summary, languagePrompt].filter(Boolean).join("\n\n"),
+        buildLanguageKeyboard(languages, type)
       );
 
       sessions.update(chatId, {
         type,
-        stage: "choosing audio language",
+        stage: type === "audio" ? "choosing audio language" : "choosing video language",
         title,
         description,
         thumbnailUrl,
         webpageUrl,
         durationSeconds,
         sourceFormats: formats,
-        audioLanguages: languages,
+        mediaLanguages: languages,
         languageMessageId: languageMessage.message_id,
         formatMessageId: null,
         selectionMessageId: null,
       });
       return;
     }
-
-    const filtered = getFormatsByType(formats, type, { durationSeconds });
-
-    if (!filtered.length) {
-      await ctx.reply("No suitable formats found. Try another link or type.");
-      return;
-    }
-
-    const promptText = type === "audio" ? "Choose an audio bitrate:" : "Choose a video quality:";
-    const summary = buildMediaSummary({ title, durationSeconds });
-    const formatMessage = await ctx.reply(
-      [summary, promptText].filter(Boolean).join("\n\n"),
-      buildFormatKeyboard(filtered, type)
-    );
-
-    sessions.update(chatId, {
-      type,
-      stage: "choosing video quality",
-      title,
-      description,
-      thumbnailUrl,
-      webpageUrl,
-      durationSeconds,
-      formats: filtered,
-      formatMessageId: formatMessage.message_id,
-      selectionMessageId: null,
-    });
   } catch (error) {
     logger.error({ error: error.message, stack: error.stack }, "Failed to list formats");
     await ctx.reply("Could not retrieve formats. Please try again later.");
@@ -439,7 +413,7 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
   }
 });
 
-bot.action(/^lang:(\d+)$/i, async (ctx) => {
+bot.action(/^lang:(audio|video):(\d+)$/i, async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from?.id;
   if (!isAuthorized(userId)) {
@@ -449,13 +423,14 @@ bot.action(/^lang:(\d+)$/i, async (ctx) => {
   }
 
   const session = sessions.get(chatId);
-  if (!session || session.userId !== userId || session.type !== "audio") {
-    await ctx.answerCbQuery("No active audio request. Send a link first.", { show_alert: true });
+  const type = ctx.match[1].toLowerCase();
+  if (!session || session.userId !== userId || session.type !== type) {
+    await ctx.answerCbQuery(`No active ${type} request. Send a link first.`, { show_alert: true });
     return;
   }
 
-  const index = Number.parseInt(ctx.match[1], 10);
-  const selectedLanguage = session.audioLanguages?.[index];
+  const index = Number.parseInt(ctx.match[2], 10);
+  const selectedLanguage = session.mediaLanguages?.[index];
 
   if (!selectedLanguage) {
     await ctx.answerCbQuery("Unknown language.", { show_alert: true });
@@ -465,9 +440,9 @@ bot.action(/^lang:(\d+)$/i, async (ctx) => {
   await ctx.answerCbQuery(`Selected ${selectedLanguage.label}`);
 
   logRequest(ctx, {
-    action: 'choose-audio-language',
-    audioLanguageId: selectedLanguage.id,
-    audioLanguageLabel: selectedLanguage.label,
+    action: type === "audio" ? 'choose-audio-language' : 'choose-video-language',
+    languageId: selectedLanguage.id,
+    languageLabel: selectedLanguage.label,
   });
 
   const languageMessageId = session.languageMessageId || ctx.callbackQuery?.message?.message_id;
@@ -476,32 +451,37 @@ bot.action(/^lang:(\d+)$/i, async (ctx) => {
     sessions.update(chatId, { languageMessageId: null });
   }
 
-  const filtered = getAudioQualityOptions(session.sourceFormats || [], {
-    durationSeconds: session.durationSeconds,
-    languageId: selectedLanguage.id,
-  });
+  const filtered = type === "audio"
+    ? getAudioQualityOptions(session.sourceFormats || [], {
+      durationSeconds: session.durationSeconds,
+      languageId: selectedLanguage.id,
+    })
+    : getVideoQualityOptions(session.sourceFormats || [], {
+      languageId: selectedLanguage.id,
+    });
 
   if (!filtered.length) {
     await ctx.reply("No suitable formats found for that language. Try another link.");
     return;
   }
 
+  const promptText = type === "audio" ? "Choose an audio bitrate:" : "Choose a video quality:";
   const formatMessage = await ctx.reply(
-    [buildMediaSummary(session), "Choose an audio bitrate:"].filter(Boolean).join("\n\n"),
-    buildFormatKeyboard(filtered, "audio")
+    [buildMediaSummary(session), promptText].filter(Boolean).join("\n\n"),
+    buildFormatKeyboard(filtered, type)
   );
 
   sessions.update(chatId, {
-    selectedAudioLanguageId: selectedLanguage.id,
-    selectedAudioLanguageLabel: selectedLanguage.label,
-    stage: "choosing audio quality",
+    selectedLanguageId: selectedLanguage.id,
+    selectedLanguageLabel: selectedLanguage.label,
+    stage: type === "audio" ? "choosing audio quality" : "choosing video quality",
     formats: filtered,
     formatMessageId: formatMessage.message_id,
     languageMessageId: null,
   });
 });
 
-bot.action("back:audio-language", async (ctx) => {
+bot.action(/^back:(audio|video)-language$/i, async (ctx) => {
   const chatId = ctx.chat.id;
   const userId = ctx.from?.id;
   if (!isAuthorized(userId)) {
@@ -511,8 +491,9 @@ bot.action("back:audio-language", async (ctx) => {
   }
 
   const session = sessions.get(chatId);
-  if (!session || session.userId !== userId || session.type !== "audio" || !session.audioLanguages?.length) {
-    await ctx.answerCbQuery("No active audio request.", { show_alert: true });
+  const type = ctx.match[1].toLowerCase();
+  if (!session || session.userId !== userId || session.type !== type || !session.mediaLanguages?.length) {
+    await ctx.answerCbQuery(`No active ${type} request.`, { show_alert: true });
     return;
   }
 
@@ -523,15 +504,16 @@ bot.action("back:audio-language", async (ctx) => {
     await ctx.telegram.deleteMessage(chatId, formatMessageId).catch(() => {});
   }
 
+  const promptText = type === "audio" ? "Choose audio language:" : "Choose video audio language:";
   const languageMessage = await ctx.reply(
-    [buildMediaSummary(session), "Choose audio language:"].filter(Boolean).join("\n\n"),
-    buildLanguageKeyboard(session.audioLanguages)
+    [buildMediaSummary(session), promptText].filter(Boolean).join("\n\n"),
+    buildLanguageKeyboard(session.mediaLanguages, type)
   );
 
   sessions.update(chatId, {
-    stage: "choosing audio language",
-    selectedAudioLanguageId: null,
-    selectedAudioLanguageLabel: null,
+    stage: type === "audio" ? "choosing audio language" : "choosing video language",
+    selectedLanguageId: null,
+    selectedLanguageLabel: null,
     formats: null,
     formatMessageId: null,
     languageMessageId: languageMessage.message_id,

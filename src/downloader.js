@@ -297,7 +297,7 @@ function createLanguageLabel(languageCode) {
   return languageCode.toUpperCase();
 }
 
-function getAudioLanguageId(format) {
+function getMediaLanguageId(format) {
   return normalizeLanguageCode(format.meta?.language) || "default";
 }
 
@@ -411,10 +411,11 @@ function createAudioLabel({ name, bitrateKbps, sizeBytes }) {
   return `${nameText}MP3 ${bitrateText}${sizeText}`.trim();
 }
 
-function createVideoLabel({ height, sizeBytes }) {
+function createVideoLabel({ height, sizeBytes, audioLanguageLabel }) {
   const quality = height ? `${height}p` : "Video";
+  const languageText = audioLanguageLabel ? ` ${audioLanguageLabel}` : "";
   const sizeText = sizeBytes ? ` (~${formatBytes(sizeBytes)})` : "";
-  return ('MP4 ' + quality + sizeText).trim();
+  return ('MP4 ' + quality + languageText + sizeText).trim();
 }
 
 function preferenceScore(format, type) {
@@ -560,6 +561,7 @@ export async function listFormats(url) {
       url,
       formatCount: formats.length,
       audioLanguageCount: getAudioLanguages(formats).length,
+      videoLanguageCount: getVideoLanguages(formats).length,
     },
     "Listed available formats"
   );
@@ -576,14 +578,14 @@ export async function listFormats(url) {
 
 export function getFormatsByType(formats, type, options = {}) {
   const scopedFormats = type === "audio" && options.languageId
-    ? formats.filter((format) => getAudioLanguageId(format) === options.languageId)
+    ? formats.filter((format) => getMediaLanguageId(format) === options.languageId)
     : formats;
   return filterWellKnownFormats(scopedFormats, type, options);
 }
 
 export function getAudioQualityOptions(formats, { durationSeconds, languageId } = {}) {
   const scopedFormats = languageId
-    ? formats.filter((format) => getAudioLanguageId(format) === languageId)
+    ? formats.filter((format) => getMediaLanguageId(format) === languageId)
     : formats;
   const sourceFormat = pickBestAudioSource(scopedFormats);
 
@@ -610,14 +612,22 @@ export function getAudioQualityOptions(formats, { durationSeconds, languageId } 
 }
 
 export function getAudioLanguages(formats) {
+  return getMediaLanguages(formats, "audio");
+}
+
+export function getVideoLanguages(formats) {
+  return getMediaLanguages(formats, "audio");
+}
+
+function getMediaLanguages(formats, type) {
   const groups = new Map();
 
   for (const format of formats) {
-    if (!isAllowedFormat(format, "audio")) {
+    if (!isAllowedFormat(format, type)) {
       continue;
     }
 
-    const id = getAudioLanguageId(format);
+    const id = getMediaLanguageId(format);
     const existing = groups.get(id);
     groups.set(id, {
       id,
@@ -635,6 +645,55 @@ export function getAudioLanguages(formats) {
     }
     return a.label.localeCompare(b.label);
   });
+}
+
+export function getVideoQualityOptions(formats, { languageId } = {}) {
+  const audioFormats = languageId
+    ? formats.filter((format) => getMediaLanguageId(format) === languageId)
+    : formats;
+  const audioFormat = pickBestAudioSource(audioFormats);
+  if (!audioFormat) {
+    return [];
+  }
+
+  const videoFormats = formats
+    .filter((format) => format.type === "video")
+    .filter((format) => ["mp4", "webm", "mkv"].includes(format.extension.toLowerCase()))
+    .filter((format) => format.meta?.vcodec && format.meta.vcodec !== "none")
+    .filter((format) => !format.meta?.acodec || format.meta.acodec === "none")
+    .sort((a, b) => parseResolutionHeight(b.resolution) - parseResolutionHeight(a.resolution));
+
+  const dedupedVideos = [];
+  const seenHeights = new Set();
+  for (const format of videoFormats) {
+    const height = parseResolutionHeight(format.resolution) || format.meta?.height || 0;
+    const key = height || format.id;
+    if (seenHeights.has(key)) {
+      continue;
+    }
+    seenHeights.add(key);
+    dedupedVideos.push(format);
+  }
+
+  const videos = dedupedVideos.slice(0, 6)
+    .map((format) => ({
+      ...format,
+      id: `${format.id}+${audioFormat.id}`,
+      videoFormatId: format.id,
+      audioFormatId: audioFormat.id,
+      estimatedSizeBytes: (format.approxSize || 0) + (audioFormat.approxSize || 0) || format.estimatedSizeBytes || null,
+      displayLabel: createVideoLabel({
+        height: parseResolutionHeight(format.resolution) || format.meta?.height || null,
+        sizeBytes: (format.approxSize || 0) + (audioFormat.approxSize || 0) || format.estimatedSizeBytes,
+      }),
+      targetFileName: `${format.id}-${audioFormat.id}-video`,
+    }));
+
+  if (videos.length) {
+    return videos;
+  }
+
+  return filterWellKnownFormats(formats, "video");
 }
 
 export async function downloadMedia({

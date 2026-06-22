@@ -5,7 +5,7 @@ Telegram bot for downloading media (YouTube, Instagram, Facebook, etc.) via `yt-
 ## Features
 - Runs on Node.js 22 inside Docker.
 - Authorizes usage based on an allowlist of Telegram user IDs.
-- Inline keyboards auto-dismiss after each tap, audio downloads ask for language first, and format buttons use friendly labels such as “MP3 128 kbps (~25MB)” or “MP4 1080p (~300MB)”.
+- Inline keyboards auto-dismiss after each tap, downloads ask for language first, and format buttons use friendly labels such as “MP3 128 kbps (~25MB)” or “MP4 1080p (~300MB)”.
 - Download queue with live status updates (Queued → Downloading → Uploading → Done).
 - Downloads the selected source stream, transcodes audio to MP3 quality presets, and ships video streams straight to Telegram.
 - MP3 downloads are named after the source title and include title, description, and thumbnail album art when the source provides them.
@@ -66,8 +66,8 @@ If you prefer Telegram’s hosted Bot API, leave `TELEGRAM_API_ROOT` empty and r
 ## Bot Usage
 1. Send a supported media URL from an authorized Telegram account.
 2. Choose whether you want audio (MP3) or video (MP4). The bot removes the prompt right away so double taps do not queue extra jobs.
-3. For audio, pick one of the detected languages. Streams without language metadata are grouped as `Default / Original`.
-4. Pick one of the suggested formats. Audio options are MP3 presets from podcast-sized files up to high quality; video options show resolutions like 720p or 1080p along with size hints.
+3. Pick one of the detected languages. Streams without language metadata are grouped as `Default / Original`.
+4. Pick one of the suggested formats. Audio options are MP3 presets from podcast-sized files up to high quality; video options show resolutions like 720p or 1080p with the selected language audio track.
 5. Watch the status updates: the bot downloads the chosen stream and uploads it back named after the source title.
 6. If the final file would exceed `MAX_FILE_SIZE_MB` or Telegram rejects the upload, the bot keeps the session open and re-shows the format options so you can choose a smaller variant.
 
