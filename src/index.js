@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { SessionStore } from "./session-store.js";
 import { DownloadQueue } from "./queue.js";
-import { getFormatsByType, listFormats, downloadMedia } from "./downloader.js";
+import { getAudioLanguages, getFormatsByType, listFormats, downloadMedia } from "./downloader.js";
 
 const telegrafOptions = {};
 if (config.TELEGRAM_API_ROOT) {
@@ -65,6 +65,19 @@ function buildFormatKeyboard(formats, type) {
   return Markup.inlineKeyboard(rows);
 }
 
+function buildLanguageKeyboard(languages) {
+  const buttons = languages.map((language, index) => {
+    const suffix = language.count > 1 ? ` (${language.count})` : "";
+    return Markup.button.callback(`${language.label}${suffix}`, `lang:${index}`);
+  });
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 2) {
+    rows.push(buttons.slice(i, i + 2));
+  }
+  rows.push([Markup.button.callback("Cancel", "cancel")]);
+  return Markup.inlineKeyboard(rows);
+}
+
 function isTelegramEntityTooLarge(error) {
   if (!error) {
     return false;
@@ -106,7 +119,8 @@ bot.help(async (ctx) => {
     "Usage:",
     "1. Send a media link.",
     "2. Pick audio or video.",
-    "3. Choose a provided format.",
+    "3. For audio, choose the language.",
+    "4. Choose a provided format.",
     "I'll download, convert to MP3/MP4, and send it back.",
     `Files larger than ${config.MAX_FILE_SIZE_MB} MB are skipped.`,
   ].join("\n");
@@ -122,6 +136,16 @@ bot.command("cancel", async (ctx) => {
 
   logRequest(ctx, { command: 'cancel' });
 
+  const session = sessions.get(ctx.chat.id);
+  if (session?.languageMessageId) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, session.languageMessageId).catch(() => {});
+  }
+  if (session?.formatMessageId) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, session.formatMessageId).catch(() => {});
+  }
+  if (session?.selectionMessageId) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, session.selectionMessageId).catch(() => {});
+  }
   sessions.delete(ctx.chat.id);
   await ctx.reply("Canceled current request. Send a new link to start over.");
 });
@@ -141,6 +165,9 @@ bot.on("text", async (ctx) => {
     }
     if (existingSession.selectionMessageId) {
       await ctx.telegram.deleteMessage(ctx.chat.id, existingSession.selectionMessageId).catch(() => {});
+    }
+    if (existingSession.languageMessageId) {
+      await ctx.telegram.deleteMessage(ctx.chat.id, existingSession.languageMessageId).catch(() => {});
     }
     sessions.delete(ctx.chat.id);
   }
@@ -201,6 +228,34 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
 
   try {
     const { formats, title, webpageUrl, durationSeconds } = await listFormats(session.url);
+
+    if (type === "audio") {
+      const languages = getAudioLanguages(formats);
+
+      if (!languages.length) {
+        await ctx.reply("No suitable audio formats found. Try another link.");
+        return;
+      }
+
+      const languageMessage = await ctx.reply(
+        "Choose audio language:",
+        buildLanguageKeyboard(languages)
+      );
+
+      sessions.update(chatId, {
+        type,
+        title,
+        webpageUrl,
+        durationSeconds,
+        sourceFormats: formats,
+        audioLanguages: languages,
+        languageMessageId: languageMessage.message_id,
+        formatMessageId: null,
+        selectionMessageId: null,
+      });
+      return;
+    }
+
     const filtered = getFormatsByType(formats, type, { durationSeconds });
 
     if (!filtered.length) {
@@ -233,6 +288,67 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
       logger.debug({ error: error.message }, "Failed to delete loading message");
     }
   }
+});
+
+bot.action(/^lang:(\d+)$/i, async (ctx) => {
+  const chatId = ctx.chat.id;
+  const userId = ctx.from?.id;
+  if (!isAuthorized(userId)) {
+    await ctx.answerCbQuery();
+    await handleUnauthorized(ctx);
+    return;
+  }
+
+  const session = sessions.get(chatId);
+  if (!session || session.userId !== userId || session.type !== "audio") {
+    await ctx.answerCbQuery("No active audio request. Send a link first.", { show_alert: true });
+    return;
+  }
+
+  const index = Number.parseInt(ctx.match[1], 10);
+  const selectedLanguage = session.audioLanguages?.[index];
+
+  if (!selectedLanguage) {
+    await ctx.answerCbQuery("Unknown language.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery(`Selected ${selectedLanguage.label}`);
+
+  logRequest(ctx, {
+    action: 'choose-audio-language',
+    audioLanguageId: selectedLanguage.id,
+    audioLanguageLabel: selectedLanguage.label,
+  });
+
+  const languageMessageId = session.languageMessageId || ctx.callbackQuery?.message?.message_id;
+  if (languageMessageId) {
+    await ctx.telegram.deleteMessage(chatId, languageMessageId).catch(() => {});
+    sessions.update(chatId, { languageMessageId: null });
+  }
+
+  const filtered = getFormatsByType(session.sourceFormats || [], "audio", {
+    durationSeconds: session.durationSeconds,
+    languageId: selectedLanguage.id,
+  });
+
+  if (!filtered.length) {
+    await ctx.reply("No suitable formats found for that language. Try another link.");
+    return;
+  }
+
+  const formatMessage = await ctx.reply(
+    "Choose an audio bitrate:",
+    buildFormatKeyboard(filtered, "audio")
+  );
+
+  sessions.update(chatId, {
+    selectedAudioLanguageId: selectedLanguage.id,
+    selectedAudioLanguageLabel: selectedLanguage.label,
+    formats: filtered,
+    formatMessageId: formatMessage.message_id,
+    languageMessageId: null,
+  });
 });
 
 

@@ -143,6 +143,55 @@ function classifyFormat(entry) {
   return "video";
 }
 
+function isAllowedFormat(fmt, type) {
+  const allowedExtensions = type === "audio"
+    ? ["m4a", "mp3", "webm", "opus", "mp4", "ogg"]
+    : ["mp4", "webm", "mkv"];
+
+  if (fmt.type !== type) {
+    return false;
+  }
+  if (!allowedExtensions.includes(fmt.extension.toLowerCase())) {
+    return false;
+  }
+  if (type === "video") {
+    const lowerNote = fmt.note.toLowerCase();
+    if (lowerNote.includes("video only") && !fmt.id.includes("+")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normalizeLanguageCode(value) {
+  if (!value || value === "und" || value === "unknown") {
+    return null;
+  }
+  return String(value).trim().toLowerCase();
+}
+
+function createLanguageLabel(languageCode) {
+  if (!languageCode) {
+    return "Default / Original";
+  }
+
+  try {
+    const displayNames = new Intl.DisplayNames(["en"], { type: "language" });
+    const displayName = displayNames.of(languageCode);
+    if (displayName && displayName.toLowerCase() !== languageCode) {
+      return displayName;
+    }
+  } catch {
+    // Fall back to the code when Intl cannot describe yt-dlp's language tag.
+  }
+
+  return languageCode.toUpperCase();
+}
+
+function getAudioLanguageId(format) {
+  return normalizeLanguageCode(format.meta?.language) || "default";
+}
+
 function parseSizeFromNote(note) {
   const sizeMatch = note.match(/(~?)(\d+(?:\.\d+)?)\s*(KiB|MiB|GiB|KB|MB|GB)/i);
   if (!sizeMatch) {
@@ -269,25 +318,7 @@ function preferenceScore(format, type) {
 }
 
 function filterWellKnownFormats(formats, type, { durationSeconds } = {}) {
-  const allowedExtensions = type === "audio"
-    ? ["m4a", "mp3", "webm", "opus", "mp4", "ogg"]
-    : ["mp4", "webm", "mkv"];
-
-  const filtered = formats.filter((fmt) => {
-    if (fmt.type !== type) {
-      return false;
-    }
-    if (!allowedExtensions.includes(fmt.extension.toLowerCase())) {
-      return false;
-    }
-    if (type === "video") {
-      const lowerNote = fmt.note.toLowerCase();
-      if (lowerNote.includes("video only") && !fmt.id.includes("+")) {
-        return false;
-      }
-    }
-    return true;
-  });
+  const filtered = formats.filter((fmt) => isAllowedFormat(fmt, type));
 
   if (type === "audio") {
     filtered.sort((a, b) => (b.meta?.abr || b.meta?.tbr || b.approxSize || 0) - (a.meta?.abr || a.meta?.tbr || a.approxSize || 0));
@@ -406,7 +437,38 @@ export async function listFormats(url) {
 }
 
 export function getFormatsByType(formats, type, options = {}) {
-  return filterWellKnownFormats(formats, type, options);
+  const scopedFormats = type === "audio" && options.languageId
+    ? formats.filter((format) => getAudioLanguageId(format) === options.languageId)
+    : formats;
+  return filterWellKnownFormats(scopedFormats, type, options);
+}
+
+export function getAudioLanguages(formats) {
+  const groups = new Map();
+
+  for (const format of formats) {
+    if (!isAllowedFormat(format, "audio")) {
+      continue;
+    }
+
+    const id = getAudioLanguageId(format);
+    const existing = groups.get(id);
+    groups.set(id, {
+      id,
+      label: createLanguageLabel(id === "default" ? null : id),
+      count: (existing?.count || 0) + 1,
+    });
+  }
+
+  return [...groups.values()].sort((a, b) => {
+    if (a.id === "default") {
+      return -1;
+    }
+    if (b.id === "default") {
+      return 1;
+    }
+    return a.label.localeCompare(b.label);
+  });
 }
 
 export async function downloadMedia({
