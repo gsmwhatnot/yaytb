@@ -553,6 +553,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
     formatId: selectedFormat.id,
     formatLabel: selectedFormat.displayLabel,
     outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
+    outputAudioChannels: selectedFormat.outputAudioChannels,
   });
 
   if (session.formatMessageId) {
@@ -603,6 +604,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
         },
         targetFileName: selectedFormat.targetFileName,
         outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
+        outputAudioChannels: selectedFormat.outputAudioChannels,
         description: session.description,
         thumbnailUrl: session.thumbnailUrl,
         signal: controller.signal,

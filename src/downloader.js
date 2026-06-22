@@ -11,6 +11,7 @@ const { ensureDir, readdir, remove, stat, move } = fsExtra;
 
 const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist"]; // keep invocations deterministic
 const AUDIO_OUTPUT_PRESETS = [
+  { name: "Tiny Speech", bitrateKbps: 24, channels: 1 },
   { name: "Podcast", bitrateKbps: 48 },
   { name: "Low", bitrateKbps: 64 },
   { name: "Standard", bitrateKbps: 128 },
@@ -600,6 +601,7 @@ export function getAudioQualityOptions(formats, { durationSeconds, languageId } 
       id: sourceFormat.id,
       sourceFormatId: sourceFormat.id,
       outputAudioBitrateKbps: preset.bitrateKbps,
+      outputAudioChannels: preset.channels || null,
       estimatedSizeBytes: estimatedSize || null,
       displayLabel: createAudioLabel({
         name: preset.name,
@@ -704,6 +706,7 @@ export async function downloadMedia({
   onStatus,
   targetFileName,
   outputAudioBitrateKbps,
+  outputAudioChannels,
   description,
   thumbnailUrl,
   signal,
@@ -777,6 +780,13 @@ export async function downloadMedia({
         "libmp3lame",
         "-b:a",
         `${outputAudioBitrateKbps}k`,
+      );
+
+      if (outputAudioChannels) {
+        ffmpegArgs.push("-ac", String(outputAudioChannels));
+      }
+
+      ffmpegArgs.push(
         "-id3v2_version",
         "3",
         "-metadata",

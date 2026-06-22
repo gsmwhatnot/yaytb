@@ -67,7 +67,7 @@ If you prefer Telegram’s hosted Bot API, leave `TELEGRAM_API_ROOT` empty and r
 1. Send a supported media URL from an authorized Telegram account.
 2. Choose whether you want audio (MP3) or video (MP4). The bot removes the prompt right away so double taps do not queue extra jobs.
 3. Pick one of the detected languages. Streams without language metadata are grouped as `Default / Original`.
-4. Pick one of the suggested formats. Audio options are MP3 presets from podcast-sized files up to high quality; video options show resolutions like 720p or 1080p with the selected language audio track.
+4. Pick one of the suggested formats. Audio options are MP3 presets from tiny speech files up to high quality; video options show resolutions like 720p or 1080p with the selected language audio track.
 5. Watch the status updates: the bot downloads the chosen stream and uploads it back named after the source title.
 6. If the final file would exceed `MAX_FILE_SIZE_MB` or Telegram rejects the upload, the bot keeps the session open and re-shows the format options so you can choose a smaller variant.
 
