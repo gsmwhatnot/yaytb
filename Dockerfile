@@ -9,7 +9,7 @@ RUN apk add --update --no-cache \
         py3-pip \
     && ln -sf python3 /usr/bin/python
 
-RUN python3 -m pip install --no-cache --upgrade pip setuptools
+RUN python3 -m pip install --no-cache --upgrade pip setuptools "yt-dlp[default]"
 
 WORKDIR /usr/src/app
 

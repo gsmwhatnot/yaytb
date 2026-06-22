@@ -9,13 +9,12 @@ Telegram bot for downloading media (YouTube, Instagram, Facebook, etc.) via `yt-
 - Download queue with live status updates (Queued → Downloading → Uploading → Done).
 - Grabs the exact format selected via `yt-dlp` and ships it straight to Telegram without extra transcoding.
 - Optional local Bot API gateway lifts Telegram’s upload ceiling to 2 GB.
-- Persists logs, `yt-dlp` binary, and `cookies.txt` via bind-mounted volumes.
+- Persists logs and `cookies.txt` via bind-mounted volumes.
 - Automatically cleans temporary download directories after each transfer.
 
 ## Prerequisites
 - Docker & Docker Compose
-- `yt-dlp` executable (ELF) placed in `./volumes/yt-dlp/yt-dlp` and marked executable.
-- Netscape-format `cookies.txt` placed at `./volumes/cookies.txt` (may be empty if you do not need authenticated downloads).
+- Netscape-format `cookies.txt` placed at `./files/cookies.txt` (may be empty if you do not need authenticated downloads).
 - Telegram API credentials (`api_id` + `api_hash`) from [my.telegram.org](https://my.telegram.org) when running the optional local Bot API server.
 
 ## Configuration
@@ -25,7 +24,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | Bot token from BotFather. |
 | `AUTHORIZED_USER_IDS` | Comma-separated Telegram user IDs allowed to use the bot. |
-| `YT_DLP_BINARY_PATH` | Path to the mounted `yt-dlp` binary inside the container (default `/opt/yt-dlp/yt-dlp`). |
+| `YT_DLP_BINARY_PATH` | Path to the `yt-dlp` binary inside the container (default `/usr/local/bin/yt-dlp`). |
 | `YT_DLP_COOKIES_PATH` | Path to the mounted `cookies.txt` inside the container. |
 | `LOG_FILE_PATH` | Location for the structured log file (default `/usr/src/app/logs/app.log`). |
 | `MAX_CONCURRENT_DOWNLOADS` | Queue concurrency (default `2`). |
@@ -41,8 +40,6 @@ Adjust the docker-compose volume mounts if you change any of the file paths.
 ```bash
 cp .env.example .env
 # edit .env accordingly
-chmod +x volumes/yt-dlp/yt-dlp   # ensure the binary is executable
-
 docker compose up --build
 ```
 
@@ -73,8 +70,7 @@ Use `/help` in chat for a quick recap or `/cancel` to abort the current request.
 - Temporary files live under `DOWNLOAD_TEMP_DIR` and are deleted after every job.
 - Persistent files:
   - `logs/app.log` – structured JSON logs.
-  - `volumes/yt-dlp/yt-dlp` – mounted `yt-dlp` binary.
-  - `volumes/cookies.txt` – authentication cookies for `yt-dlp`.
+  - `files/cookies.txt` – authentication cookies for `yt-dlp`.
   - `telegram-bot-server-data` – Bot API cache (format manifests, uploaded files, etc.).
 
 ## Development

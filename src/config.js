@@ -44,7 +44,7 @@ if (AUTHORIZED_USER_IDS.size === 0) {
   throw new Error("AUTHORIZED_USER_IDS must contain at least one Telegram user ID");
 }
 
-const YT_DLP_BINARY_PATH = process.env.YT_DLP_BINARY_PATH || "/opt/yt-dlp/yt-dlp";
+const YT_DLP_BINARY_PATH = process.env.YT_DLP_BINARY_PATH || "/usr/local/bin/yt-dlp";
 const YT_DLP_COOKIES_PATH = process.env.YT_DLP_COOKIES_PATH || "/config/cookies.txt";
 
 const MAX_CONCURRENT_DOWNLOADS = parsePositiveInt(
