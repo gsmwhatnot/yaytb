@@ -8,6 +8,7 @@ Telegram bot for downloading media (YouTube, Instagram, Facebook, etc.) via `yt-
 - Inline keyboards auto-dismiss after each tap, audio downloads ask for language first, and format buttons use friendly labels such as “MP3 128 kbps (~25MB)” or “MP4 1080p (~300MB)”.
 - Download queue with live status updates (Queued → Downloading → Uploading → Done).
 - Downloads the selected source stream, transcodes audio to MP3 quality presets, and ships video streams straight to Telegram.
+- MP3 downloads are named after the source title and include title, description, and thumbnail album art when the source provides them.
 - Optional local Bot API gateway lifts Telegram’s upload ceiling to 2 GB.
 - Persists logs, the manually managed `yt-dlp` binary, and `cookies.txt` via bind-mounted volumes.
 - Automatically cleans temporary download directories after each transfer.

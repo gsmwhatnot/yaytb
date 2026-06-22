@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, createReadStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import fsExtra from "fs-extra";
 import { join, resolve, parse as parsePath } from "node:path";
 import crypto from "node:crypto";
@@ -16,6 +17,7 @@ const AUDIO_OUTPUT_PRESETS = [
   { name: "High", bitrateKbps: 192 },
   { name: "Best", bitrateKbps: 256 },
 ];
+const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
 
 function runCommand(command, args, { onStdout, onStderr } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -107,6 +109,85 @@ function sanitizeFileName(name) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 180) || "output";
+}
+
+function cleanMetadataValue(value, maxLength = 4000) {
+  if (!value) {
+    return "";
+  }
+  return String(value)
+    .replace(/\0/g, "")
+    .replace(/\r\n/g, "\n")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function selectThumbnailUrl(info) {
+  if (info.thumbnail) {
+    return info.thumbnail;
+  }
+
+  const thumbnails = Array.isArray(info.thumbnails) ? info.thumbnails : [];
+  const sorted = thumbnails
+    .filter((thumbnail) => thumbnail?.url)
+    .sort((a, b) => ((b.width || 0) * (b.height || 0)) - ((a.width || 0) * (a.height || 0)));
+
+  return sorted[0]?.url || null;
+}
+
+async function downloadThumbnail(url, outputPath) {
+  if (!url || typeof fetch !== "function") {
+    return false;
+  }
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Thumbnail request failed with status ${response.status}`);
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (contentLength && contentLength > MAX_THUMBNAIL_BYTES) {
+    throw new Error("Thumbnail exceeds size limit");
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  if (arrayBuffer.byteLength > MAX_THUMBNAIL_BYTES) {
+    throw new Error("Thumbnail exceeds size limit");
+  }
+
+  await writeFile(outputPath, Buffer.from(arrayBuffer));
+  return true;
+}
+
+async function createCoverImage(thumbnailUrl, workingDir) {
+  if (!thumbnailUrl) {
+    return null;
+  }
+
+  const thumbnailPath = join(workingDir, "thumbnail-source");
+  const coverPath = join(workingDir, "cover.jpg");
+
+  try {
+    await downloadThumbnail(thumbnailUrl, thumbnailPath);
+    await runCommand("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      thumbnailPath,
+      "-frames:v",
+      "1",
+      coverPath,
+    ]);
+    return coverPath;
+  } catch (error) {
+    logger.warn({ error: error.message }, "Failed to prepare MP3 cover art");
+    return null;
+  }
 }
 
 function classifyFormat(format) {
@@ -442,6 +523,8 @@ export async function listFormats(url) {
 
   return {
     title: info.title,
+    description: info.description || "",
+    thumbnailUrl: selectThumbnailUrl(info),
     webpageUrl: info.webpage_url,
     durationSeconds: info.duration || null,
     formats,
@@ -519,6 +602,8 @@ export async function downloadMedia({
   onStatus,
   targetFileName,
   outputAudioBitrateKbps,
+  description,
+  thumbnailUrl,
 }) {
   const jobId = crypto.randomUUID();
   const workingDir = resolve(config.DOWNLOAD_TEMP_DIR, jobId);
@@ -549,14 +634,17 @@ export async function downloadMedia({
   const displayTitle = expectedTitle || baseTitle;
   const originalExt = parsePath(downloadedFile).ext || (type === "audio" ? ".mp3" : ".mp4");
   const randomName = crypto.randomUUID();
-  const safeBase = sanitizeFileName(targetFileName || randomName);
+  const safeBase = type === "audio" && outputAudioBitrateKbps
+    ? baseTitle
+    : sanitizeFileName(targetFileName || randomName);
   const finalExt = type === "audio" && outputAudioBitrateKbps ? ".mp3" : originalExt;
   const finalFileName = `${safeBase}${finalExt}`;
   const finalPath = join(workingDir, finalFileName);
 
   if (type === "audio" && outputAudioBitrateKbps) {
     onStatus?.(`Converting to MP3 ${outputAudioBitrateKbps} kbps...`);
-    await runCommand("ffmpeg", [
+    const coverPath = await createCoverImage(thumbnailUrl, workingDir);
+    const ffmpegArgs = [
       "-hide_banner",
       "-loglevel",
       "error",
@@ -565,13 +653,50 @@ export async function downloadMedia({
       downloadedPath,
       "-map",
       "0:a:0",
-      "-vn",
+    ];
+
+    if (coverPath) {
+      ffmpegArgs.push(
+        "-i",
+        coverPath,
+        "-map",
+        "1:v:0"
+      );
+    } else {
+      ffmpegArgs.push("-vn");
+    }
+
+    ffmpegArgs.push(
       "-codec:a",
       "libmp3lame",
       "-b:a",
       `${outputAudioBitrateKbps}k`,
-      finalPath,
-    ]);
+      "-id3v2_version",
+      "3",
+      "-metadata",
+      `title=${cleanMetadataValue(displayTitle, 255)}`
+    );
+
+    if (description) {
+      ffmpegArgs.push("-metadata", `comment=${cleanMetadataValue(description)}`);
+    }
+
+    if (coverPath) {
+      ffmpegArgs.push(
+        "-codec:v",
+        "mjpeg",
+        "-disposition:v",
+        "attached_pic",
+        "-metadata:s:v",
+        "title=Album cover",
+        "-metadata:s:v",
+        "comment=Cover (front)"
+      );
+    }
+
+    ffmpegArgs.push(finalPath);
+
+    await runCommand("ffmpeg", ffmpegArgs);
     await remove(downloadedPath);
   } else if (downloadedPath !== finalPath) {
     await move(downloadedPath, finalPath, { overwrite: true });

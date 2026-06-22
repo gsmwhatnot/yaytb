@@ -227,7 +227,7 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
   const loadingMessage = await ctx.reply("Fetching available formats...");
 
   try {
-    const { formats, title, webpageUrl, durationSeconds } = await listFormats(session.url);
+    const { formats, title, description, thumbnailUrl, webpageUrl, durationSeconds } = await listFormats(session.url);
 
     if (type === "audio") {
       const languages = getAudioLanguages(formats);
@@ -245,6 +245,8 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
       sessions.update(chatId, {
         type,
         title,
+        description,
+        thumbnailUrl,
         webpageUrl,
         durationSeconds,
         sourceFormats: formats,
@@ -272,6 +274,8 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
     sessions.update(chatId, {
       type,
       title,
+      description,
+      thumbnailUrl,
       webpageUrl,
       durationSeconds,
       formats: filtered,
@@ -425,6 +429,8 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
         },
         targetFileName: selectedFormat.targetFileName,
         outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
+        description: session.description,
+        thumbnailUrl: session.thumbnailUrl,
       });
 
       if (download.size > TELEGRAM_FILE_LIMIT_BYTES) {
