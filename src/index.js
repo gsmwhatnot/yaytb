@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { SessionStore } from "./session-store.js";
 import { DownloadQueue } from "./queue.js";
-import { getAudioLanguages, getFormatsByType, listFormats, downloadMedia } from "./downloader.js";
+import { getAudioLanguages, getAudioQualityOptions, getFormatsByType, listFormats, downloadMedia } from "./downloader.js";
 
 const telegrafOptions = {};
 if (config.TELEGRAM_API_ROOT) {
@@ -327,7 +327,7 @@ bot.action(/^lang:(\d+)$/i, async (ctx) => {
     sessions.update(chatId, { languageMessageId: null });
   }
 
-  const filtered = getFormatsByType(session.sourceFormats || [], "audio", {
+  const filtered = getAudioQualityOptions(session.sourceFormats || [], {
     durationSeconds: session.durationSeconds,
     languageId: selectedLanguage.id,
   });
@@ -382,6 +382,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
     action: 'choose-format',
     formatId: selectedFormat.id,
     formatLabel: selectedFormat.displayLabel,
+    outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
   });
 
   if (session.formatMessageId) {
@@ -423,6 +424,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
           await updateStatus(text);
         },
         targetFileName: selectedFormat.targetFileName,
+        outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
       });
 
       if (download.size > TELEGRAM_FILE_LIMIT_BYTES) {

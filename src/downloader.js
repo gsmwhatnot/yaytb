@@ -9,6 +9,13 @@ import { logger } from "./logger.js";
 const { ensureDir, readdir, remove, stat, move } = fsExtra;
 
 const COMMON_ARGS = ["--ignore-config", "--no-warnings", "--no-playlist", "--js-runtimes", "node"]; // keep invocations deterministic
+const AUDIO_OUTPUT_PRESETS = [
+  { name: "Podcast", bitrateKbps: 48 },
+  { name: "Low", bitrateKbps: 64 },
+  { name: "Standard", bitrateKbps: 128 },
+  { name: "High", bitrateKbps: 192 },
+  { name: "Best", bitrateKbps: 256 },
+];
 
 function runCommand(command, args, { onStdout, onStderr } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -257,10 +264,11 @@ function determineAudioBitrateKbps(format) {
   return nearestAudioBitrate(Math.round(raw));
 }
 
-function createAudioLabel({ bitrateKbps, sizeBytes }) {
+function createAudioLabel({ name, bitrateKbps, sizeBytes }) {
+  const nameText = name ? `${name} ` : "";
   const bitrateText = bitrateKbps ? `${bitrateKbps} kbps` : "MP3";
   const sizeText = sizeBytes ? ` (~${formatBytes(sizeBytes)})` : "";
-  return `MP3 ${bitrateText}${sizeText}`.trim();
+  return `${nameText}MP3 ${bitrateText}${sizeText}`.trim();
 }
 
 function createVideoLabel({ height, sizeBytes }) {
@@ -345,6 +353,21 @@ function filterWellKnownFormats(formats, type, { durationSeconds } = {}) {
   });
 }
 
+function pickBestAudioSource(formats) {
+  const audioFormats = formats
+    .filter((fmt) => isAllowedFormat(fmt, "audio"))
+    .sort((a, b) => {
+      const bitrateA = a.meta?.abr || a.meta?.tbr || extractBitrateFromNote(a.note) || 0;
+      const bitrateB = b.meta?.abr || b.meta?.tbr || extractBitrateFromNote(b.note) || 0;
+      if (bitrateB !== bitrateA) {
+        return bitrateB - bitrateA;
+      }
+      return (b.approxSize || 0) - (a.approxSize || 0);
+    });
+
+  return audioFormats[0] || null;
+}
+
 function pickDownloadedFile(files) {
   return files.find((file) => {
     if (file.startsWith(".")) {
@@ -416,6 +439,34 @@ export function getFormatsByType(formats, type, options = {}) {
   return filterWellKnownFormats(scopedFormats, type, options);
 }
 
+export function getAudioQualityOptions(formats, { durationSeconds, languageId } = {}) {
+  const scopedFormats = languageId
+    ? formats.filter((format) => getAudioLanguageId(format) === languageId)
+    : formats;
+  const sourceFormat = pickBestAudioSource(scopedFormats);
+
+  if (!sourceFormat) {
+    return [];
+  }
+
+  return AUDIO_OUTPUT_PRESETS.map((preset) => {
+    const estimatedSize = estimateAudioSize(durationSeconds, preset.bitrateKbps);
+    return {
+      ...sourceFormat,
+      id: sourceFormat.id,
+      sourceFormatId: sourceFormat.id,
+      outputAudioBitrateKbps: preset.bitrateKbps,
+      estimatedSizeBytes: estimatedSize || null,
+      displayLabel: createAudioLabel({
+        name: preset.name,
+        bitrateKbps: preset.bitrateKbps,
+        sizeBytes: estimatedSize,
+      }),
+      targetFileName: `${sourceFormat.id}-audio-${preset.bitrateKbps}k`,
+    };
+  });
+}
+
 export function getAudioLanguages(formats) {
   const groups = new Map();
 
@@ -451,6 +502,7 @@ export async function downloadMedia({
   expectedTitle,
   onStatus,
   targetFileName,
+  outputAudioBitrateKbps,
 }) {
   const jobId = crypto.randomUUID();
   const workingDir = resolve(config.DOWNLOAD_TEMP_DIR, jobId);
@@ -482,10 +534,30 @@ export async function downloadMedia({
   const originalExt = parsePath(downloadedFile).ext || (type === "audio" ? ".mp3" : ".mp4");
   const randomName = crypto.randomUUID();
   const safeBase = sanitizeFileName(targetFileName || randomName);
-  const finalFileName = `${safeBase}${originalExt}`;
+  const finalExt = type === "audio" && outputAudioBitrateKbps ? ".mp3" : originalExt;
+  const finalFileName = `${safeBase}${finalExt}`;
   const finalPath = join(workingDir, finalFileName);
 
-  if (downloadedPath !== finalPath) {
+  if (type === "audio" && outputAudioBitrateKbps) {
+    onStatus?.(`Converting to MP3 ${outputAudioBitrateKbps} kbps...`);
+    await runCommand("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-i",
+      downloadedPath,
+      "-map",
+      "0:a:0",
+      "-vn",
+      "-codec:a",
+      "libmp3lame",
+      "-b:a",
+      `${outputAudioBitrateKbps}k`,
+      finalPath,
+    ]);
+    await remove(downloadedPath);
+  } else if (downloadedPath !== finalPath) {
     await move(downloadedPath, finalPath, { overwrite: true });
   }
 
