@@ -9,6 +9,7 @@ Telegram bot for downloading media (YouTube, Instagram, Facebook, etc.) via `yt-
 - Download queue with live status updates (Queued → Downloading → Uploading → Done).
 - Downloads the selected source stream, transcodes audio to MP3 quality presets, and ships video streams straight to Telegram.
 - MP3 downloads are named after the source title and include title, description, and thumbnail album art when the source provides them.
+- `/cancel` stops queued and running jobs, `/status` shows queue state, and `/ytdlp` reports downloader diagnostics.
 - Optional local Bot API gateway lifts Telegram’s upload ceiling to 2 GB.
 - Persists logs, the manually managed `yt-dlp` binary, and `cookies.txt` via bind-mounted volumes.
 - Automatically cleans temporary download directories after each transfer.
@@ -70,7 +71,7 @@ If you prefer Telegram’s hosted Bot API, leave `TELEGRAM_API_ROOT` empty and r
 5. Watch the status updates: the bot downloads the chosen stream and uploads it back named after the source title.
 6. If the final file would exceed `MAX_FILE_SIZE_MB` or Telegram rejects the upload, the bot keeps the session open and re-shows the format options so you can choose a smaller variant.
 
-Use `/help` in chat for a quick recap or `/cancel` to abort the current request.
+Use `/help` in chat for a quick recap, `/status` to inspect the current queue, `/ytdlp` to inspect downloader health, or `/cancel` to abort the current request.
 
 ## Cleanup & Storage
 - Temporary files live under `DOWNLOAD_TEMP_DIR` and are deleted after every job.

@@ -1,4 +1,6 @@
 import { Telegraf, Markup } from "telegraf";
+import { existsSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { SessionStore } from "./session-store.js";
@@ -21,6 +23,10 @@ if (config.TELEGRAM_API_ROOT) {
 }
 
 const TELEGRAM_FILE_LIMIT_BYTES = config.MAX_FILE_SIZE_BYTES;
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
+}
 
 function isAuthorized(userId) {
   if (config.AUTHORIZED_USER_IDS.size === 0) {
@@ -61,7 +67,14 @@ function buildFormatKeyboard(formats, type) {
   for (let i = 0; i < buttons.length; i += 2) {
     rows.push(buttons.slice(i, i + 2));
   }
-  rows.push([Markup.button.callback("Cancel", "cancel")]);
+  if (type === "audio") {
+    rows.push([
+      Markup.button.callback("Back", "back:audio-language"),
+      Markup.button.callback("Cancel", "cancel"),
+    ]);
+  } else {
+    rows.push([Markup.button.callback("Cancel", "cancel")]);
+  }
   return Markup.inlineKeyboard(rows);
 }
 
@@ -76,6 +89,90 @@ function buildLanguageKeyboard(languages) {
   }
   rows.push([Markup.button.callback("Cancel", "cancel")]);
   return Markup.inlineKeyboard(rows);
+}
+
+function formatDuration(seconds) {
+  if (!seconds) {
+    return null;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  }
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function buildMediaSummary(session) {
+  const title = session.title ? `Title: ${session.title}` : null;
+  const duration = formatDuration(session.durationSeconds);
+  return [title, duration ? `Duration: ${duration}` : null].filter(Boolean).join("\n");
+}
+
+async function deleteSessionMessages(ctx, session) {
+  const chatId = ctx.chat.id;
+  const messageIds = [
+    session?.selectionMessageId,
+    session?.languageMessageId,
+    session?.formatMessageId,
+  ].filter(Boolean);
+
+  await Promise.all(messageIds.map((messageId) =>
+    ctx.telegram.deleteMessage(chatId, messageId).catch(() => {})
+  ));
+}
+
+async function cancelSession(ctx, { userId, notify = true } = {}) {
+  const chatId = ctx.chat.id;
+  const session = sessions.get(chatId);
+
+  if (!session) {
+    if (notify) {
+      await ctx.reply("No active request to cancel.");
+    }
+    return false;
+  }
+
+  if (userId && session.userId !== userId) {
+    return false;
+  }
+
+  await deleteSessionMessages(ctx, session);
+
+  if (session.activeJob) {
+    session.activeJob.cancelQueued?.();
+    session.activeJob.controller?.abort();
+    if (session.activeJob.statusMessageId) {
+      await ctx.telegram.editMessageText(
+        chatId,
+        session.activeJob.statusMessageId,
+        undefined,
+        "Canceled."
+      ).catch(() => {});
+    }
+  }
+
+  sessions.delete(chatId);
+  if (notify) {
+    await ctx.reply("Canceled current request. Send a new link to start over.");
+  }
+  return true;
+}
+
+function getCookieStatus() {
+  if (!config.YT_DLP_COOKIES_PATH) {
+    return "disabled";
+  }
+  if (!existsSync(config.YT_DLP_COOKIES_PATH)) {
+    return "missing";
+  }
+  try {
+    const stats = statSync(config.YT_DLP_COOKIES_PATH);
+    return stats.size > 0 ? "present" : "empty";
+  } catch {
+    return "unreadable";
+  }
 }
 
 function isTelegramEntityTooLarge(error) {
@@ -121,6 +218,11 @@ bot.help(async (ctx) => {
     "2. Pick audio or video.",
     "3. For audio, choose the language.",
     "4. Choose a provided format.",
+    "",
+    "Commands:",
+    "/status - Show queue and current request.",
+    "/ytdlp - Show downloader diagnostics.",
+    "/cancel - Stop the current request.",
     "I'll download, convert to MP3/MP4, and send it back.",
     `Files larger than ${config.MAX_FILE_SIZE_MB} MB are skipped.`,
   ].join("\n");
@@ -135,19 +237,55 @@ bot.command("cancel", async (ctx) => {
   }
 
   logRequest(ctx, { command: 'cancel' });
+  await cancelSession(ctx, { userId: ctx.from.id });
+});
+
+bot.command("status", async (ctx) => {
+  if (!isAuthorized(ctx.from?.id)) {
+    await handleUnauthorized(ctx);
+    return;
+  }
 
   const session = sessions.get(ctx.chat.id);
-  if (session?.languageMessageId) {
-    await ctx.telegram.deleteMessage(ctx.chat.id, session.languageMessageId).catch(() => {});
+  const stats = queue.stats;
+  const lines = [
+    `Active downloads: ${stats.active}/${stats.concurrency}`,
+    `Queued downloads: ${stats.queued}`,
+  ];
+
+  if (session) {
+    lines.push(`Current request: ${session.stage || "waiting"}`);
+    const summary = buildMediaSummary(session);
+    if (summary) {
+      lines.push(summary);
+    }
+  } else {
+    lines.push("Current request: none");
   }
-  if (session?.formatMessageId) {
-    await ctx.telegram.deleteMessage(ctx.chat.id, session.formatMessageId).catch(() => {});
+
+  await ctx.reply(lines.join("\n"));
+});
+
+bot.command("ytdlp", async (ctx) => {
+  if (!isAuthorized(ctx.from?.id)) {
+    await handleUnauthorized(ctx);
+    return;
   }
-  if (session?.selectionMessageId) {
-    await ctx.telegram.deleteMessage(ctx.chat.id, session.selectionMessageId).catch(() => {});
+
+  try {
+    const version = await getYtDlpVersion();
+    await ctx.reply([
+      `yt-dlp: ${version}`,
+      `Path: ${config.YT_DLP_BINARY_PATH}`,
+      `JS runtime: ${config.YT_DLP_JS_RUNTIME || "default"}`,
+      `Remote components: ${config.YT_DLP_REMOTE_COMPONENTS.join(", ") || "none"}`,
+      `Extra args: ${config.YT_DLP_EXTRA_ARGS.join(" ") || "none"}`,
+      `Cookies: ${getCookieStatus()}`,
+    ].join("\n"));
+  } catch (error) {
+    logger.error({ error: error.message }, "Failed to inspect yt-dlp");
+    await ctx.reply(`yt-dlp check failed: ${error.message}`);
   }
-  sessions.delete(ctx.chat.id);
-  await ctx.reply("Canceled current request. Send a new link to start over.");
 });
 
 bot.on("text", async (ctx) => {
@@ -160,16 +298,11 @@ bot.on("text", async (ctx) => {
 
   const existingSession = sessions.get(ctx.chat.id);
   if (existingSession) {
-    if (existingSession.formatMessageId) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, existingSession.formatMessageId).catch(() => {});
+    if (existingSession.userId !== ctx.from.id) {
+      await ctx.reply("Another user has an active request in this chat. Ask them to /cancel it first.");
+      return;
     }
-    if (existingSession.selectionMessageId) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, existingSession.selectionMessageId).catch(() => {});
-    }
-    if (existingSession.languageMessageId) {
-      await ctx.telegram.deleteMessage(ctx.chat.id, existingSession.languageMessageId).catch(() => {});
-    }
-    sessions.delete(ctx.chat.id);
+    await cancelSession(ctx, { userId: ctx.from.id, notify: false });
   }
 
   const url = sanitizeUrl(ctx.message.text);
@@ -179,6 +312,8 @@ bot.on("text", async (ctx) => {
   }
 
   sessions.create(ctx.chat.id, {
+    requestId: randomUUID(),
+    stage: "choosing type",
     url,
     userId: ctx.from.id,
   });
@@ -215,6 +350,7 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
   }
 
   const type = ctx.match[1].toLowerCase();
+  const requestId = session.requestId;
   const promptMessageId = ctx.callbackQuery?.message?.message_id;
   const selectionMessageId = session.selectionMessageId || promptMessageId;
   await ctx.answerCbQuery();
@@ -225,9 +361,14 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
   }
 
   const loadingMessage = await ctx.reply("Fetching available formats...");
+  sessions.update(chatId, { stage: `fetching ${type} formats` });
 
   try {
     const { formats, title, description, thumbnailUrl, webpageUrl, durationSeconds } = await listFormats(session.url);
+    const currentSession = sessions.get(chatId);
+    if (!currentSession || currentSession.requestId !== requestId) {
+      return;
+    }
 
     if (type === "audio") {
       const languages = getAudioLanguages(formats);
@@ -237,13 +378,15 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
         return;
       }
 
+      const summary = buildMediaSummary({ title, durationSeconds });
       const languageMessage = await ctx.reply(
-        "Choose audio language:",
+        [summary, "Choose audio language:"].filter(Boolean).join("\n\n"),
         buildLanguageKeyboard(languages)
       );
 
       sessions.update(chatId, {
         type,
+        stage: "choosing audio language",
         title,
         description,
         thumbnailUrl,
@@ -266,13 +409,15 @@ bot.action(/^type:(audio|video)$/i, async (ctx) => {
     }
 
     const promptText = type === "audio" ? "Choose an audio bitrate:" : "Choose a video quality:";
+    const summary = buildMediaSummary({ title, durationSeconds });
     const formatMessage = await ctx.reply(
-      promptText,
+      [summary, promptText].filter(Boolean).join("\n\n"),
       buildFormatKeyboard(filtered, type)
     );
 
     sessions.update(chatId, {
       type,
+      stage: "choosing video quality",
       title,
       description,
       thumbnailUrl,
@@ -342,16 +487,54 @@ bot.action(/^lang:(\d+)$/i, async (ctx) => {
   }
 
   const formatMessage = await ctx.reply(
-    "Choose an audio bitrate:",
+    [buildMediaSummary(session), "Choose an audio bitrate:"].filter(Boolean).join("\n\n"),
     buildFormatKeyboard(filtered, "audio")
   );
 
   sessions.update(chatId, {
     selectedAudioLanguageId: selectedLanguage.id,
     selectedAudioLanguageLabel: selectedLanguage.label,
+    stage: "choosing audio quality",
     formats: filtered,
     formatMessageId: formatMessage.message_id,
     languageMessageId: null,
+  });
+});
+
+bot.action("back:audio-language", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const userId = ctx.from?.id;
+  if (!isAuthorized(userId)) {
+    await ctx.answerCbQuery();
+    await handleUnauthorized(ctx);
+    return;
+  }
+
+  const session = sessions.get(chatId);
+  if (!session || session.userId !== userId || session.type !== "audio" || !session.audioLanguages?.length) {
+    await ctx.answerCbQuery("No active audio request.", { show_alert: true });
+    return;
+  }
+
+  await ctx.answerCbQuery();
+
+  const formatMessageId = session.formatMessageId || ctx.callbackQuery?.message?.message_id;
+  if (formatMessageId) {
+    await ctx.telegram.deleteMessage(chatId, formatMessageId).catch(() => {});
+  }
+
+  const languageMessage = await ctx.reply(
+    [buildMediaSummary(session), "Choose audio language:"].filter(Boolean).join("\n\n"),
+    buildLanguageKeyboard(session.audioLanguages)
+  );
+
+  sessions.update(chatId, {
+    stage: "choosing audio language",
+    selectedAudioLanguageId: null,
+    selectedAudioLanguageLabel: null,
+    formats: null,
+    formatMessageId: null,
+    languageMessageId: languageMessage.message_id,
   });
 });
 
@@ -374,6 +557,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
   const type = ctx.match[1].toLowerCase();
   const index = Number.parseInt(ctx.match[2], 10);
   const selectedFormat = session.formats?.[index];
+  const requestId = session.requestId;
 
   if (!selectedFormat) {
     await ctx.answerCbQuery("Unknown format.", { show_alert: true });
@@ -412,8 +596,16 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
 
   const statusMessage = await ctx.reply('Queued...');
   const updateStatus = createStatusUpdater(chatId, statusMessage.message_id);
+  const controller = new AbortController();
 
   const job = queue.enqueue(async () => {
+    if (controller.signal.aborted) {
+      return { success: false, reason: "canceled" };
+    }
+
+    sessions.update(chatId, {
+      stage: type === "audio" ? "downloading audio" : "downloading video",
+    });
     await updateStatus('Preparing download...');
 
     let download;
@@ -431,6 +623,7 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
         outputAudioBitrateKbps: selectedFormat.outputAudioBitrateKbps,
         description: session.description,
         thumbnailUrl: session.thumbnailUrl,
+        signal: controller.signal,
       });
 
       if (download.size > TELEGRAM_FILE_LIMIT_BYTES) {
@@ -505,12 +698,32 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
     }
   });
 
+  sessions.update(chatId, {
+    stage: job.position > 0 ? `queued #${job.position}` : "queued",
+    activeJob: {
+      requestId,
+      controller,
+      cancelQueued: job.cancel,
+      statusMessageId: statusMessage.message_id,
+    },
+  });
+
   if (job.position > 0) {
     await updateStatus('Queued (#' + job.position + '). Waiting for your turn...');
   }
 
   job.promise
     .then(async (result) => {
+      const currentSession = sessions.get(chatId);
+      if (!currentSession || currentSession.requestId !== requestId) {
+        return;
+      }
+
+      if (result?.reason === "canceled") {
+        sessions.delete(chatId);
+        return;
+      }
+
       if (result?.success) {
         sessions.delete(chatId);
         setTimeout(() => {
@@ -522,11 +735,14 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
       }
 
       if (result?.keepSession) {
-        const currentSession = sessions.get(chatId);
         if (currentSession?.formats?.length) {
           const promptText = type === 'audio' ? 'Choose another audio bitrate:' : 'Choose another video quality:';
           const retryMessage = await ctx.reply(promptText, buildFormatKeyboard(currentSession.formats, type));
-          sessions.update(chatId, { formatMessageId: retryMessage.message_id });
+          sessions.update(chatId, {
+            activeJob: null,
+            stage: type === "audio" ? "choosing audio quality" : "choosing video quality",
+            formatMessageId: retryMessage.message_id,
+          });
         }
         return;
       }
@@ -534,13 +750,38 @@ bot.action(/^fmt:(audio|video):(\d+)$/i, async (ctx) => {
       sessions.delete(chatId);
     })
     .catch(async (error) => {
+      const currentSession = sessions.get(chatId);
+      if (!currentSession || currentSession.requestId !== requestId) {
+        return;
+      }
+
+      if (isAbortError(error)) {
+        logger.info({ chatId, requestId }, 'Download job canceled');
+        sessions.delete(chatId);
+        await updateStatus('Canceled.');
+        return;
+      }
+
       logger.error({ error: error.message, stack: error.stack }, 'Download job failed');
+      sessions.update(chatId, { activeJob: null, stage: "failed" });
       await updateStatus('Failed. Please try another format or send a new link.');
     });
 });
 
 bot.action("cancel", async (ctx) => {
-  sessions.delete(ctx.chat.id);
+  const userId = ctx.from?.id;
+  if (!isAuthorized(userId)) {
+    await ctx.answerCbQuery();
+    await handleUnauthorized(ctx);
+    return;
+  }
+
+  const canceled = await cancelSession(ctx, { userId, notify: false });
+  if (!canceled) {
+    await ctx.answerCbQuery("This is not your active request.", { show_alert: true });
+    return;
+  }
+
   await ctx.answerCbQuery("Canceled");
   await ctx.reply("Canceled. Send a new link whenever you're ready.");
 });
@@ -561,9 +802,17 @@ bot.launch().then(async () => {
         jsRuntime: config.YT_DLP_JS_RUNTIME || undefined,
         remoteComponents: config.YT_DLP_REMOTE_COMPONENTS,
         extraArgs: config.YT_DLP_EXTRA_ARGS,
+        cookies: getCookieStatus(),
       },
       "yt-dlp ready"
     );
+    const cookieStatus = getCookieStatus();
+    if (cookieStatus !== "present") {
+      logger.warn(
+        { path: config.YT_DLP_COOKIES_PATH, status: cookieStatus },
+        "yt-dlp cookies are not ready"
+      );
+    }
   } catch (error) {
     logger.error(
       {

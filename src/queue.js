@@ -20,6 +20,8 @@ export class DownloadQueue {
       task,
       resolve: externalResolve,
       reject: externalReject,
+      active: false,
+      canceled: false,
     };
 
     if (shouldQueue) {
@@ -32,7 +34,26 @@ export class DownloadQueue {
       promise,
       position,
       queued: shouldQueue,
+      cancel: () => this.cancel(job),
     };
+  }
+
+  cancel(job) {
+    if (job.active || job.canceled) {
+      return false;
+    }
+
+    const index = this.queue.indexOf(job);
+    if (index === -1) {
+      return false;
+    }
+
+    job.canceled = true;
+    this.queue.splice(index, 1);
+    const error = new Error("Job canceled");
+    error.name = "AbortError";
+    job.reject(error);
+    return true;
   }
 
   get stats() {
@@ -44,21 +65,34 @@ export class DownloadQueue {
   }
 
   #runJob(job) {
+    if (job.canceled) {
+      return;
+    }
+
+    job.active = true;
     this.activeCount += 1;
 
     Promise.resolve()
       .then(() => job.task())
-      .then((value) => {
-        job.resolve(value);
-      })
-      .catch((error) => {
-        job.reject(error);
-      })
+      .then(
+        (value) => {
+          job.result = { ok: true, value };
+        },
+        (error) => {
+          job.result = { ok: false, error };
+        }
+      )
       .finally(() => {
         this.activeCount -= 1;
         const next = this.queue.shift();
         if (next) {
           this.#runJob(next);
+        }
+
+        if (job.result?.ok) {
+          job.resolve(job.result.value);
+        } else {
+          job.reject(job.result?.error || new Error("Job failed"));
         }
       });
   }

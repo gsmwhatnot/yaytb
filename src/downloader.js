@@ -19,14 +19,43 @@ const AUDIO_OUTPUT_PRESETS = [
 ];
 const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
 
-function runCommand(command, args, { onStdout, onStderr } = {}) {
+function createAbortError(message = "Operation canceled") {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+function runCommand(command, args, { onStdout, onStderr, signal } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
+    if (signal?.aborted) {
+      rejectPromise(createAbortError());
+      return;
+    }
+
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
     let stdout = "";
     let stderr = "";
+    let aborted = false;
+    let killTimer = null;
+
+    const abortHandler = () => {
+      aborted = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 5000);
+    };
+
+    signal?.addEventListener("abort", abortHandler, { once: true });
 
     child.stdout.on("data", (data) => {
       const textChunk = data.toString();
@@ -45,6 +74,16 @@ function runCommand(command, args, { onStdout, onStderr } = {}) {
     });
 
     child.on("close", (code) => {
+      signal?.removeEventListener("abort", abortHandler);
+      if (killTimer) {
+        clearTimeout(killTimer);
+      }
+
+      if (aborted) {
+        rejectPromise(createAbortError());
+        return;
+      }
+
       if (code !== 0) {
         const error = new Error(`${command} exited with code ${code}`);
         error.stdout = stdout;
@@ -135,13 +174,14 @@ function selectThumbnailUrl(info) {
   return sorted[0]?.url || null;
 }
 
-async function downloadThumbnail(url, outputPath) {
+async function downloadThumbnail(url, outputPath, signal) {
   if (!url || typeof fetch !== "function") {
     return false;
   }
 
+  throwIfAborted(signal);
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(15000)].filter(Boolean)),
   });
 
   if (!response.ok) {
@@ -162,7 +202,7 @@ async function downloadThumbnail(url, outputPath) {
   return true;
 }
 
-async function createCoverImage(thumbnailUrl, workingDir) {
+async function createCoverImage(thumbnailUrl, workingDir, signal) {
   if (!thumbnailUrl) {
     return null;
   }
@@ -171,7 +211,7 @@ async function createCoverImage(thumbnailUrl, workingDir) {
   const coverPath = join(workingDir, "cover.jpg");
 
   try {
-    await downloadThumbnail(thumbnailUrl, thumbnailPath);
+    await downloadThumbnail(thumbnailUrl, thumbnailPath, signal);
     await runCommand("ffmpeg", [
       "-hide_banner",
       "-loglevel",
@@ -182,9 +222,12 @@ async function createCoverImage(thumbnailUrl, workingDir) {
       "-frames:v",
       "1",
       coverPath,
-    ]);
+    ], { signal });
     return coverPath;
   } catch (error) {
+    if (error.name === "AbortError") {
+      throw error;
+    }
     logger.warn({ error: error.message }, "Failed to prepare MP3 cover art");
     return null;
   }
@@ -604,116 +647,129 @@ export async function downloadMedia({
   outputAudioBitrateKbps,
   description,
   thumbnailUrl,
+  signal,
 }) {
+  throwIfAborted(signal);
   const jobId = crypto.randomUUID();
   const workingDir = resolve(config.DOWNLOAD_TEMP_DIR, jobId);
   await ensureDir(workingDir);
 
-  const outputTemplate = join(workingDir, "%(id)s.%(ext)s");
+  try {
+    const outputTemplate = join(workingDir, "%(id)s.%(ext)s");
 
-  const args = buildArgs(
-    "--no-progress",
-    "--output",
-    outputTemplate,
-    "-f",
-    formatId,
-    url
-  );
-
-  onStatus?.("Downloading source...");
-  await runYtDlp(args);
-
-  const files = await readdir(workingDir);
-  const downloadedFile = pickDownloadedFile(files);
-  if (!downloadedFile) {
-    throw new Error("Downloaded file not found");
-  }
-
-  const downloadedPath = join(workingDir, downloadedFile);
-  const baseTitle = sanitizeFileName(expectedTitle || parsePath(downloadedFile).name);
-  const displayTitle = expectedTitle || baseTitle;
-  const originalExt = parsePath(downloadedFile).ext || (type === "audio" ? ".mp3" : ".mp4");
-  const randomName = crypto.randomUUID();
-  const safeBase = type === "audio" && outputAudioBitrateKbps
-    ? baseTitle
-    : sanitizeFileName(targetFileName || randomName);
-  const finalExt = type === "audio" && outputAudioBitrateKbps ? ".mp3" : originalExt;
-  const finalFileName = `${safeBase}${finalExt}`;
-  const finalPath = join(workingDir, finalFileName);
-
-  if (type === "audio" && outputAudioBitrateKbps) {
-    onStatus?.(`Converting to MP3 ${outputAudioBitrateKbps} kbps...`);
-    const coverPath = await createCoverImage(thumbnailUrl, workingDir);
-    const ffmpegArgs = [
-      "-hide_banner",
-      "-loglevel",
-      "error",
-      "-y",
-      "-i",
-      downloadedPath,
-    ];
-
-    if (coverPath) {
-      ffmpegArgs.push(
-        "-i",
-        coverPath,
-        "-map",
-        "1:v:0"
-      );
-    } else {
-      ffmpegArgs.push("-vn");
-    }
-
-    ffmpegArgs.push(
-      "-map",
-      "0:a:0",
-      "-codec:a",
-      "libmp3lame",
-      "-b:a",
-      `${outputAudioBitrateKbps}k`,
-      "-id3v2_version",
-      "3",
-      "-metadata",
-      `title=${cleanMetadataValue(displayTitle, 255)}`
+    const args = buildArgs(
+      "--no-progress",
+      "--output",
+      outputTemplate,
+      "-f",
+      formatId,
+      url
     );
 
-    if (description) {
-      ffmpegArgs.push("-metadata", `comment=${cleanMetadataValue(description)}`);
+    onStatus?.("Downloading source...");
+    await runYtDlp(args, { signal });
+    throwIfAborted(signal);
+
+    const files = await readdir(workingDir);
+    const downloadedFile = pickDownloadedFile(files);
+    if (!downloadedFile) {
+      throw new Error("Downloaded file not found");
     }
 
-    if (coverPath) {
+    const downloadedPath = join(workingDir, downloadedFile);
+    const baseTitle = sanitizeFileName(expectedTitle || parsePath(downloadedFile).name);
+    const displayTitle = expectedTitle || baseTitle;
+    const originalExt = parsePath(downloadedFile).ext || (type === "audio" ? ".mp3" : ".mp4");
+    const randomName = crypto.randomUUID();
+    const safeBase = type === "audio" && outputAudioBitrateKbps
+      ? baseTitle
+      : sanitizeFileName(targetFileName || randomName);
+    const finalExt = type === "audio" && outputAudioBitrateKbps ? ".mp3" : originalExt;
+    const finalFileName = `${safeBase}${finalExt}`;
+    const finalPath = join(workingDir, finalFileName);
+
+    if (type === "audio" && outputAudioBitrateKbps) {
+      onStatus?.(`Converting to MP3 ${outputAudioBitrateKbps} kbps...`);
+      const coverPath = await createCoverImage(thumbnailUrl, workingDir, signal);
+      const ffmpegArgs = [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        downloadedPath,
+      ];
+
+      if (coverPath) {
+        ffmpegArgs.push(
+          "-i",
+          coverPath,
+          "-map",
+          "1:v:0"
+        );
+      } else {
+        ffmpegArgs.push("-vn");
+      }
+
       ffmpegArgs.push(
-        "-codec:v",
-        "mjpeg",
-        "-disposition:v",
-        "attached_pic",
-        "-metadata:s:v",
-        "title=Album cover",
-        "-metadata:s:v",
-        "comment=Cover (front)"
+        "-map",
+        "0:a:0",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        `${outputAudioBitrateKbps}k`,
+        "-id3v2_version",
+        "3",
+        "-metadata",
+        `title=${cleanMetadataValue(displayTitle, 255)}`
       );
+
+      if (description) {
+        ffmpegArgs.push("-metadata", `comment=${cleanMetadataValue(description)}`);
+      }
+
+      if (coverPath) {
+        ffmpegArgs.push(
+          "-codec:v",
+          "mjpeg",
+          "-disposition:v",
+          "attached_pic",
+          "-metadata:s:v",
+          "title=Album cover",
+          "-metadata:s:v",
+          "comment=Cover (front)"
+        );
+      }
+
+      ffmpegArgs.push(finalPath);
+
+      await runCommand("ffmpeg", ffmpegArgs, { signal });
+      await remove(downloadedPath);
+    } else if (downloadedPath !== finalPath) {
+      await move(downloadedPath, finalPath, { overwrite: true });
     }
 
-    ffmpegArgs.push(finalPath);
+    const fileStats = await stat(finalPath);
 
-    await runCommand("ffmpeg", ffmpegArgs);
-    await remove(downloadedPath);
-  } else if (downloadedPath !== finalPath) {
-    await move(downloadedPath, finalPath, { overwrite: true });
+    const cleanup = async () => {
+      await remove(workingDir);
+    };
+
+    return {
+      filePath: finalPath,
+      fileName: finalFileName,
+      title: displayTitle,
+      size: fileStats.size,
+      stream: () => createReadStream(finalPath),
+      cleanup,
+    };
+  } catch (error) {
+    await remove(workingDir).catch((cleanupError) => {
+      logger.warn(
+        { error: cleanupError.message },
+        "Failed to delete temporary download directory after error"
+      );
+    });
+    throw error;
   }
-
-  const fileStats = await stat(finalPath);
-
-  const cleanup = async () => {
-    await remove(workingDir);
-  };
-
-  return {
-    filePath: finalPath,
-    fileName: finalFileName,
-    title: displayTitle,
-    size: fileStats.size,
-    stream: () => createReadStream(finalPath),
-    cleanup,
-  };
 }
